@@ -4,10 +4,13 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import '../../../core/routing/route_names.dart';
 import '../../../core/services/document_capture_service.dart';
-import '../data/mlkit_receipt_scanner.dart';
+import '../data/gemini_receipt_scanner.dart';
 import '../data/receipt_scanner_service.dart';
+import '../domain/receipt_scan_result.dart';
+import '../domain/scanned_receipt_item.dart';
 
-/// Screen allowing users to launch the camera document scanner or pick a receipt from gallery.
+/// Screen allowing users to launch the document scanner, pick a photo,
+/// or load a sample receipt for quick testing.
 class ScanReceiptScreen extends StatefulWidget {
   const ScanReceiptScreen({super.key});
 
@@ -17,14 +20,14 @@ class ScanReceiptScreen extends StatefulWidget {
 
 class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
   final DocumentCaptureService _captureService = DocumentCaptureService();
-  final ReceiptScannerService _scannerService = MlKitReceiptScanner();
+  final ReceiptScannerService _scannerService = GeminiReceiptScanner();
   bool _isLoading = false;
   String? _statusMessage;
 
   Future<void> _scanWithCamera() async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'Skenování účtenky...';
+      _statusMessage = 'Otevírám fotoaparát a skener...';
     });
 
     try {
@@ -35,7 +38,7 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Chyba při snímání: $e')),
+          SnackBar(content: Text('Snímání zrušeno nebo selhalo: $e')),
         );
       }
     } finally {
@@ -58,13 +61,21 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
   Future<void> _processImage(File file) async {
     setState(() {
       _isLoading = true;
-      _statusMessage = 'Rozpoznávání položek...';
+      _statusMessage = 'AI rozpoznává položky na účtence...';
     });
 
     try {
       final result = await _scannerService.scanReceipt(file);
       if (mounted) {
-        context.push(RouteNames.assignItems, extra: result);
+        if (result.items.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Na snímku se nepodařilo rozpoznat položky. Zkuste účtenku vyfotit s lepším světlem.'),
+            ),
+          );
+        } else {
+          context.push(RouteNames.assignItems, extra: result);
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -82,6 +93,25 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
     }
   }
 
+  /// Loads sample demo items for immediate testing without physical paper receipts
+  void _loadDemoReceipt() {
+    final demoResult = ReceiptScanResult(
+      merchantName: 'Restaurace U Medvídka',
+      totalAmount: 430.0,
+      currency: 'CZK',
+      scannerType: ReceiptScannerType.aiVision,
+      isAiProcessed: true,
+      items: [
+        ScannedReceiptItem(name: 'Pizza Margherita', price: 190.0, quantity: 1),
+        ScannedReceiptItem(name: 'Plzeňské pivo 12°', price: 60.0, quantity: 2),
+        ScannedReceiptItem(name: 'Domácí limonáda', price: 65.0, quantity: 1),
+        ScannedReceiptItem(name: 'Espresso', price: 55.0, quantity: 1),
+      ],
+    );
+
+    context.push(RouteNames.assignItems, extra: demoResult);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -93,11 +123,17 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
               ? Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 16),
+                    const CircularProgressIndicator(color: Color(0xFF10B981)),
+                    const SizedBox(height: 20),
                     Text(
                       _statusMessage ?? 'Zpracovávám...',
-                      style: const TextStyle(fontSize: 16),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Gemini 2.0 Flash / ML Kit',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                   ],
                 )
@@ -105,7 +141,7 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Container(
-                      padding: const EdgeInsets.all(24),
+                      padding: const EdgeInsets.all(28),
                       decoration: BoxDecoration(
                         color: const Color(0xFF10B981).withAlpha(25),
                         shape: BoxShape.circle,
@@ -126,7 +162,7 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Automatické oříznutí a načtení položek bez ručního zadávání.',
+                      'Automatické oříznutí a vytažení položek s cenami pomocí AI.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),
@@ -135,7 +171,7 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
                       width: double.infinity,
                       child: ElevatedButton.icon(
                         icon: const Icon(LucideIcons.camera),
-                        label: const Text('Spustit fotoaparát / skener'),
+                        label: const Text('Spustit fotoaparát a skener'),
                         onPressed: _scanWithCamera,
                       ),
                     ),
@@ -144,9 +180,15 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
                       width: double.infinity,
                       child: OutlinedButton.icon(
                         icon: const Icon(LucideIcons.image),
-                        label: const Text('Vybrat z galerie'),
+                        label: const Text('Vybrat z fotogalerie'),
                         onPressed: _pickFromGallery,
                       ),
+                    ),
+                    const SizedBox(height: 24),
+                    TextButton.icon(
+                      icon: const Icon(LucideIcons.sparkles, size: 16),
+                      label: const Text('Otestovat s ukázkovou účtenkou (Demo)'),
+                      onPressed: _loadDemoReceipt,
                     ),
                   ],
                 ),
