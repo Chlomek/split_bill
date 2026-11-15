@@ -7,6 +7,10 @@ class ScannedReceiptItem {
   final double price;
   final int quantity;
 
+  /// Discount for this line that is already subtracted from [price]
+  /// (positive number, informational only).
+  final double discount;
+
   /// IDs of group members assigned to pay for this item.
   final List<String> assignedMemberIds;
 
@@ -15,6 +19,7 @@ class ScannedReceiptItem {
     required this.name,
     required this.price,
     this.quantity = 1,
+    this.discount = 0,
     List<String>? assignedMemberIds,
   })  : id = id ?? const Uuid().v4(),
         assignedMemberIds = assignedMemberIds ?? [];
@@ -24,6 +29,7 @@ class ScannedReceiptItem {
     String? name,
     double? price,
     int? quantity,
+    double? discount,
     List<String>? assignedMemberIds,
   }) {
     return ScannedReceiptItem(
@@ -31,6 +37,7 @@ class ScannedReceiptItem {
       name: name ?? this.name,
       price: price ?? this.price,
       quantity: quantity ?? this.quantity,
+      discount: discount ?? this.discount,
       assignedMemberIds: assignedMemberIds ?? List.from(this.assignedMemberIds),
     );
   }
@@ -41,6 +48,7 @@ class ScannedReceiptItem {
       'name': name,
       'price': price,
       'quantity': quantity,
+      'discount': discount,
       'assigned_member_ids': assignedMemberIds,
     };
   }
@@ -51,6 +59,7 @@ class ScannedReceiptItem {
       name: (json['name'] ?? json['title'] ?? 'Item') as String,
       price: ((json['price'] ?? json['amount'] ?? 0) as num).toDouble(),
       quantity: ((json['quantity'] ?? json['qty'] ?? 1) as num).toInt(),
+      discount: ((json['discount'] ?? 0) as num).toDouble(),
       assignedMemberIds: (json['assigned_member_ids'] as List<dynamic>?)
               ?.map((e) => e.toString())
               .toList() ??

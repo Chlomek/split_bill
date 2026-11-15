@@ -9,6 +9,19 @@ class AppTheme {
   static const Color secondaryColor = Color(0xFF6366F1); // Indigo
   static const Color surfaceColor = Color(0xFFF9FAFB);
 
+  /// Money the user is owed.
+  static const Color positiveColor = Color(0xFF10B981);
+
+  /// Money the user owes.
+  static const Color negativeColor = Color(0xFFEF4444);
+
+  /// Colour for a balance: green when owed, red when owing, grey when settled.
+  static Color balanceColor(double balance) {
+    if (balance > 0.005) return positiveColor;
+    if (balance < -0.005) return negativeColor;
+    return Colors.grey;
+  }
+
   static ThemeData get lightTheme {
     final colorScheme = ColorScheme.fromSeed(
       seedColor: primaryColor,

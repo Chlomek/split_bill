@@ -5,61 +5,65 @@ import '../../features/groups/presentation/groups_screen.dart';
 import '../../features/receipt_scan/domain/receipt_scan_result.dart';
 import '../../features/receipt_scan/presentation/assign_items_screen.dart';
 import '../../features/receipt_scan/presentation/scan_receipt_screen.dart';
-import '../../features/settlements/presentation/settlements_screen.dart';
 import 'route_names.dart';
 
 /// Application router configuration handling declarative routing and deep links.
+///
+/// Routes are nested so that navigating straight to a group (or back to it
+/// after saving an expense) always keeps the screens below it on the stack.
 final GoRouter appRouter = GoRouter(
   initialLocation: RouteNames.home,
   routes: [
-    // 1. Group Selection Screen (First screen of the app)
+    // 1. My groups (also shows guest onboarding on first launch)
     GoRoute(
       path: RouteNames.home,
       builder: (context, state) => const GroupsScreen(),
-    ),
+      routes: [
+        // 2. Group detail & settlement hub
+        GoRoute(
+          path: 'group/:id',
+          builder: (context, state) =>
+              GroupDetailScreen(groupId: state.pathParameters['id'] ?? ''),
+          routes: [
+            // Receipt capture
+            GoRoute(
+              path: 'scan',
+              builder: (context, state) =>
+                  ScanReceiptScreen(groupId: state.pathParameters['id'] ?? ''),
+            ),
+            // 3. Assign receipt items to members
+            GoRoute(
+              path: 'assign-items',
+              builder: (context, state) => AssignItemsScreen(
+                groupId: state.pathParameters['id'] ?? '',
+                scanResult: state.extra as ReceiptScanResult?,
+              ),
+            ),
+          ],
+        ),
 
-    // 2. Group Detail Screen (Member balances, spending overview & actions)
-    GoRoute(
-      path: RouteNames.groupDetail,
-      builder: (context, state) {
-        final id = state.pathParameters['id'] ?? '';
-        return GroupDetailScreen(groupId: id);
-      },
-    ),
-
-    // 3. Receipt Scanning & Capture
-    GoRoute(
-      path: RouteNames.scanReceipt,
-      builder: (context, state) => const ScanReceiptScreen(),
-    ),
-
-    // 4. Assign Line Items to Members & Payer selection
-    GoRoute(
-      path: RouteNames.assignItems,
-      builder: (context, state) {
-        final scanResult = state.extra as ReceiptScanResult?;
-        return AssignItemsScreen(scanResult: scanResult);
-      },
-    ),
-
-    // 5. Debt Settlements & SPAYD QR Payment
-    GoRoute(
-      path: RouteNames.settlements,
-      builder: (context, state) => const SettlementsScreen(),
-    ),
-
-    // 6. Deep Link invitation handler (e.g. /invite/:code or splitbill://invite/:code)
-    GoRoute(
-      path: RouteNames.invite,
-      builder: (context, state) {
-        final code = state.pathParameters['code'] ?? '';
-        return Scaffold(
-          appBar: AppBar(title: const Text('Pozvánka do skupiny')),
-          body: Center(
-            child: Text('Připojování ke skupině s kódem: $code...'),
-          ),
-        );
-      },
+        // Invitation deep link (/invite/:code or splitbill://invite/:code).
+        // Joining needs online sync, which arrives with the Supabase backend.
+        GoRoute(
+          path: 'invite/:code',
+          builder: (context, state) {
+            final code = state.pathParameters['code'] ?? '';
+            return Scaffold(
+              appBar: AppBar(title: const Text('Pozvánka do skupiny')),
+              body: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Pozvánka s kódem $code.\n\nPřipojení ke skupině bude '
+                    'dostupné po zapnutí online synchronizace.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
     ),
   ],
 );

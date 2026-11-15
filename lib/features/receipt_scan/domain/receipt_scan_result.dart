@@ -12,6 +12,10 @@ class ReceiptScanResult {
   final List<ScannedReceiptItem> items;
   final double? subtotal;
   final double? tax;
+
+  /// Discount on the whole purchase (e.g. a percentage coupon), as a positive
+  /// number. It is already reflected in [totalAmount].
+  final double? generalDiscount;
   final double? totalAmount;
   final String? currency;
   final String? merchantName;
@@ -24,6 +28,7 @@ class ReceiptScanResult {
     required this.items,
     this.subtotal,
     this.tax,
+    this.generalDiscount,
     this.totalAmount,
     this.currency,
     this.merchantName,

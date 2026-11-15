@@ -7,7 +7,7 @@ void main() {
     test('falls back to ML Kit or handles missing API key gracefully', () async {
       final scanner = GeminiReceiptScanner(apiKey: '');
       expect(scanner.type, ReceiptScannerType.aiVision);
-      expect(scanner.displayName, 'Gemini 2.0 Flash');
+      expect(scanner.displayName, 'Gemini Flash');
     });
 
     test('ReceiptScanResult calculates computed total correctly when totalAmount is omitted', () {

@@ -4,9 +4,13 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 class Env {
   Env._();
 
-  /// Loads the .env file from assets.
+  /// Bundled configuration file. Its name must not start with a dot, because
+  /// Android's asset packaging silently drops dot-files from the APK.
+  static const String fileName = 'app.env';
+
+  /// Loads [fileName] from assets.
   static Future<void> init() async {
-    await dotenv.load(fileName: '.env');
+    await dotenv.load(fileName: fileName);
   }
 
   static String get supabaseUrl =>
@@ -26,4 +30,7 @@ class Env {
 
   static String? get geminiApiKey =>
       dotenv.env['GEMINI_API_KEY'];
+
+  static String get geminiModel =>
+      dotenv.env['GEMINI_MODEL'] ?? 'gemini-flash-lite-latest';
 }

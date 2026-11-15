@@ -1,26 +1,27 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:lucide_icons/lucide_icons.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../../core/routing/route_names.dart';
 import '../../../core/services/document_capture_service.dart';
-import '../data/gemini_receipt_scanner.dart';
-import '../data/receipt_scanner_service.dart';
+import '../data/receipt_scanner_provider.dart';
 import '../domain/receipt_scan_result.dart';
 import '../domain/scanned_receipt_item.dart';
 
 /// Screen allowing users to launch the document scanner, pick a photo,
 /// or load a sample receipt for quick testing.
-class ScanReceiptScreen extends StatefulWidget {
-  const ScanReceiptScreen({super.key});
+class ScanReceiptScreen extends ConsumerStatefulWidget {
+  final String groupId;
+
+  const ScanReceiptScreen({super.key, required this.groupId});
 
   @override
-  State<ScanReceiptScreen> createState() => _ScanReceiptScreenState();
+  ConsumerState<ScanReceiptScreen> createState() => _ScanReceiptScreenState();
 }
 
-class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
+class _ScanReceiptScreenState extends ConsumerState<ScanReceiptScreen> {
   final DocumentCaptureService _captureService = DocumentCaptureService();
-  final ReceiptScannerService _scannerService = GeminiReceiptScanner();
   bool _isLoading = false;
   String? _statusMessage;
 
@@ -35,7 +36,8 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
       if (files.isNotEmpty) {
         await _processImage(files.first);
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('Receipt capture failed: $e\n$stackTrace');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Snímání zrušeno nebo selhalo: $e')),
@@ -65,7 +67,11 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
     });
 
     try {
-      final result = await _scannerService.scanReceipt(file);
+      final result = await ref.read(receiptScannerProvider).scanReceipt(file);
+      debugPrint(
+        'Receipt scan (${result.scannerType.name}): ${result.items.length} items, '
+        'total ${result.totalAmount}. Raw text: ${result.rawText}',
+      );
       if (mounted) {
         if (result.items.isEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -74,10 +80,11 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
             ),
           );
         } else {
-          context.push(RouteNames.assignItems, extra: result);
+          context.push(RouteNames.assignItems(widget.groupId), extra: result);
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('Receipt recognition failed: $e\n$stackTrace');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Chyba při čtení účtenky: $e')),
@@ -109,7 +116,7 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
       ],
     );
 
-    context.push(RouteNames.assignItems, extra: demoResult);
+    context.push(RouteNames.assignItems(widget.groupId), extra: demoResult);
   }
 
   @override
@@ -132,7 +139,7 @@ class _ScanReceiptScreenState extends State<ScanReceiptScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Gemini 2.0 Flash / ML Kit',
+                      'Gemini / ML Kit',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                   ],

@@ -13,7 +13,7 @@ Jednoduchá Flutter aplikace pro rozdělení účtů, skenování účtenek a ok
 flutter pub get
 
 # 2. Nastavení prostředí
-cp .env.example .env
+cp .env.example app.env
 
 # 3. Spuštění
 flutter run

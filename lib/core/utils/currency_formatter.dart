@@ -14,4 +14,11 @@ class CurrencyFormatter {
     );
     return format.format(amount);
   }
+
+  /// Parses user input such as "1 250,50" or "85"; returns null if invalid.
+  static double? tryParse(String input) {
+    final cleaned = input.replaceAll(RegExp(r'\s'), '').replaceAll(',', '.');
+    if (cleaned.isEmpty) return null;
+    return double.tryParse(cleaned);
+  }
 }
