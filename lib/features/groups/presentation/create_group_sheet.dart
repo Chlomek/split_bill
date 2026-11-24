@@ -29,13 +29,16 @@ String formatInviteCode(String code) {
 }
 
 /// Shares the group's invite link through the system share sheet.
-Future<void> shareInvite(Group group) {
+Future<void> shareInvite(Group group) async {
   final link = DeepLinkService(
     appDomain: Env.appDomain,
   ).buildInviteUniversalLink(group.inviteCode);
-  return Share.share(
-    'Přidej se do skupiny „${group.name}“ ve Split Bill: $link '
-    '(kód ${group.inviteCode})',
+  await SharePlus.instance.share(
+    ShareParams(
+      text:
+          'Přidej se do skupiny „${group.name}“ ve Split Bill: $link '
+          '(kód ${group.inviteCode})',
+    ),
   );
 }
 

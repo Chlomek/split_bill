@@ -17,15 +17,18 @@ class ExportService {
 
     final directory = await getTemporaryDirectory();
     final sanitizedName = groupName.replaceAll(RegExp(r'[^\w\s-]'), '').trim();
-    final fileName = 'split_bill_${sanitizedName}_${DateTime.now().millisecondsSinceEpoch}.csv';
+    final fileName =
+        'split_bill_${sanitizedName}_${DateTime.now().millisecondsSinceEpoch}.csv';
     final file = File('${directory.path}/$fileName');
 
     await file.writeAsString(csvString);
 
-    await Share.shareXFiles(
-      [XFile(file.path)],
-      text: 'Exported expenses for group "$groupName"',
-      subject: 'Split Bill Export - $groupName',
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path)],
+        text: 'Exported expenses for group "$groupName"',
+        subject: 'Split Bill Export - $groupName',
+      ),
     );
   }
 }

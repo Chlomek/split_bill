@@ -383,11 +383,14 @@ class _QrPaymentScreenState extends ConsumerState<QrPaymentScreen> {
               icon: LucideIcons.share2,
               kind: AppButtonKind.ghost,
               onDark: true,
-              onPressed: () => Share.share(
-                'Platba pro Split Bill: ${CurrencyFormatter.format(debt.amount)}\n'
-                '${IbanValidator.toCzechAccount(iban) != null ? 'Účet: ${IbanValidator.toCzechAccount(iban)}\n' : ''}'
-                'IBAN: ${IbanValidator.pretty(iban)}\n'
-                'Zpráva: ${_message(detail, debt)}',
+              onPressed: () => SharePlus.instance.share(
+                ShareParams(
+                  text:
+                      'Platba pro Split Bill: ${CurrencyFormatter.format(debt.amount)}\n'
+                      '${IbanValidator.toCzechAccount(iban) != null ? 'Účet: ${IbanValidator.toCzechAccount(iban)}\n' : ''}'
+                      'IBAN: ${IbanValidator.pretty(iban)}\n'
+                      'Zpráva: ${_message(detail, debt)}',
+                ),
               ),
             ),
           ],
