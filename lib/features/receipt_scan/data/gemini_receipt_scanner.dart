@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -15,18 +16,44 @@ import 'receipt_scanner_service.dart';
 class GeminiReceiptScanner implements ReceiptScannerService {
   final String? _apiKey;
   final http.Client _httpClient;
-  final MlKitReceiptScanner _mlKitFallback;
+  final ReceiptScannerService _mlKitFallback;
+  final List<String>? _models;
+  final List<Duration> _retryDelays;
 
   GeminiReceiptScanner({
     String? apiKey,
     http.Client? httpClient,
-    MlKitReceiptScanner? mlKitFallback,
-  })  : _apiKey = apiKey ?? Env.geminiApiKey,
-        _httpClient = httpClient ?? http.Client(),
-        _mlKitFallback = mlKitFallback ?? MlKitReceiptScanner();
+    ReceiptScannerService? mlKitFallback,
+    List<String>? models,
+    List<Duration> retryDelays = const [
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+    ],
+  }) : _apiKey = apiKey ?? Env.geminiApiKey,
+       _httpClient = httpClient ?? http.Client(),
+       _mlKitFallback = mlKitFallback ?? MlKitReceiptScanner(),
+       _models = models,
+       _retryDelays = retryDelays;
 
-  /// After this long the request is abandoned and ML Kit is used instead.
+  /// After this long one request is abandoned (and retried, if attempts
+  /// remain).
   static const Duration requestTimeout = Duration(seconds: 30);
+
+  /// Statuses that mean "overloaded or briefly unavailable, try again".
+  static const Set<int> _retryable = {429, 500, 502, 503, 504};
+
+  /// Models tried in turn: the configured one twice, then the fallback
+  /// model, which runs on separate capacity.
+  List<String> get _attemptModels =>
+      _models ?? [Env.geminiModel, Env.geminiModel, Env.geminiFallbackModel];
+
+  Future<ReceiptScanResult> _fallback(
+    File imageFile,
+    AiFallbackReason reason,
+  ) async {
+    final result = await _mlKitFallback.scanReceipt(imageFile);
+    return result.withFallbackReason(reason);
+  }
 
   @override
   ReceiptScannerType get type => ReceiptScannerType.aiVision;
@@ -37,10 +64,14 @@ class GeminiReceiptScanner implements ReceiptScannerService {
   @override
   Future<ReceiptScanResult> scanReceipt(File imageFile) async {
     final apiKey = _apiKey;
-    if (apiKey == null || apiKey.isEmpty || apiKey == 'your_gemini_api_key_here') {
+    if (apiKey == null ||
+        apiKey.isEmpty ||
+        apiKey == 'your_gemini_api_key_here') {
       // Fallback to local on-device ML Kit OCR if no API key is set
-      debugPrint('Receipt scan: no GEMINI_API_KEY in ${Env.fileName}, using on-device ML Kit.');
-      return await _mlKitFallback.scanReceipt(imageFile);
+      debugPrint(
+        'Receipt scan: no GEMINI_API_KEY in ${Env.fileName}, using on-device ML Kit.',
+      );
+      return await _fallback(imageFile, AiFallbackReason.noKey);
     }
 
     try {
@@ -51,10 +82,6 @@ class GeminiReceiptScanner implements ReceiptScannerService {
         '(photo was ${originalBytes.length ~/ 1024} kB).',
       );
       final base64Image = base64Encode(bytes);
-
-      final url = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/${Env.geminiModel}:generateContent?key=$apiKey',
-      );
 
       final payload = {
         'contents': [
@@ -97,43 +124,87 @@ Return ONLY a valid JSON object matching this schema:
     }
   ]
 }
-'''
+''',
               },
               {
-                'inline_data': {
-                  'mime_type': 'image/jpeg',
-                  'data': base64Image,
-                }
-              }
-            ]
-          }
+                'inline_data': {'mime_type': 'image/jpeg', 'data': base64Image},
+              },
+            ],
+          },
         ],
         'generationConfig': {
           'response_mime_type': 'application/json',
           'temperature': 0.1,
-        }
+        },
       };
 
-      final response = await _httpClient.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      ).timeout(requestTimeout);
+      final body = jsonEncode(payload);
+      final models = _attemptModels;
+      http.Response? response;
+      var reason = AiFallbackReason.error;
 
-      if (response.statusCode != 200) {
-        // Fallback to local OCR if Gemini endpoint returns error
-        debugPrint(
-          'Receipt scan: Gemini (${Env.geminiModel}) returned HTTP '
-          '${response.statusCode}: ${response.body}. Falling back to ML Kit.',
-        );
-        return await _mlKitFallback.scanReceipt(imageFile);
+      for (var attempt = 0; attempt < models.length; attempt++) {
+        if (attempt > 0) {
+          final wait = _retryDelays.isEmpty
+              ? Duration.zero
+              : _retryDelays[(attempt - 1).clamp(0, _retryDelays.length - 1)];
+          await Future<void>.delayed(wait);
+        }
+        final model = models[attempt];
+        try {
+          final res = await _httpClient
+              .post(
+                Uri.parse(
+                  'https://generativelanguage.googleapis.com/v1beta/models/'
+                  '$model:generateContent',
+                ),
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': apiKey,
+                },
+                body: body,
+              )
+              .timeout(requestTimeout);
+          if (res.statusCode == 200) {
+            response = res;
+            break;
+          }
+          debugPrint(
+            'Receipt scan: Gemini ($model) returned HTTP ${res.statusCode}: '
+            '${res.body}',
+          );
+          if (!_retryable.contains(res.statusCode)) {
+            reason = AiFallbackReason.error;
+            break;
+          }
+          reason = AiFallbackReason.busy;
+        } on TimeoutException {
+          debugPrint('Receipt scan: Gemini ($model) timed out.');
+          reason = AiFallbackReason.busy;
+        } on SocketException catch (e) {
+          debugPrint('Receipt scan: no connection to Gemini: $e');
+          reason = AiFallbackReason.offline;
+          break;
+        } on http.ClientException catch (e) {
+          debugPrint('Receipt scan: no connection to Gemini: $e');
+          reason = AiFallbackReason.offline;
+          break;
+        }
       }
 
-      final responseBody = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      if (response == null) {
+        debugPrint('Receipt scan: AI unavailable ($reason), using ML Kit.');
+        return await _fallback(imageFile, reason);
+      }
+
+      final responseBody =
+          jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final candidates = responseBody['candidates'] as List<dynamic>?;
       if (candidates == null || candidates.isEmpty) {
-        debugPrint('Receipt scan: Gemini returned no candidates. Falling back to ML Kit.');
-        return await _mlKitFallback.scanReceipt(imageFile);
+        debugPrint(
+          'Receipt scan: Gemini returned no candidates. Falling back to ML Kit.',
+        );
+        return await _fallback(imageFile, AiFallbackReason.error);
       }
 
       final content = candidates.first['content'] as Map<String, dynamic>;
@@ -174,7 +245,9 @@ Return ONLY a valid JSON object matching this schema:
         totalAmount: (parsedJson['total'] as num?)?.toDouble(),
         subtotal: (parsedJson['subtotal'] as num?)?.toDouble(),
         tax: (parsedJson['tax'] as num?)?.toDouble(),
-        generalDiscount: (parsedJson['general_discount'] as num?)?.toDouble().abs(),
+        generalDiscount: (parsedJson['general_discount'] as num?)
+            ?.toDouble()
+            .abs(),
         currency: parsedJson['currency'] as String? ?? 'CZK',
         merchantName: parsedJson['merchant_name'] as String?,
         scannerType: ReceiptScannerType.aiVision,
@@ -183,7 +256,7 @@ Return ONLY a valid JSON object matching this schema:
     } catch (error, stackTrace) {
       // In case of network failure or parsing error, fallback to ML Kit
       debugPrint('Receipt scan: Gemini request failed: $error\n$stackTrace');
-      return await _mlKitFallback.scanReceipt(imageFile);
+      return await _fallback(imageFile, AiFallbackReason.error);
     }
   }
 }

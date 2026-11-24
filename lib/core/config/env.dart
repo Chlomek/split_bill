@@ -19,8 +19,7 @@ class Env {
   static String get supabaseAnonKey =>
       dotenv.env['SUPABASE_ANON_KEY'] ?? 'placeholder-anon-key';
 
-  static String get appDomain =>
-      dotenv.env['APP_DOMAIN'] ?? 'splitbill.app';
+  static String get appDomain => dotenv.env['APP_DOMAIN'] ?? 'splitbill.app';
 
   static String get revenueCatAppleApiKey =>
       dotenv.env['REVENUECAT_APPLE_API_KEY'] ?? '';
@@ -28,9 +27,12 @@ class Env {
   static String get revenueCatGoogleApiKey =>
       dotenv.env['REVENUECAT_GOOGLE_API_KEY'] ?? '';
 
-  static String? get geminiApiKey =>
-      dotenv.env['GEMINI_API_KEY'];
+  static String? get geminiApiKey => dotenv.env['GEMINI_API_KEY'];
 
   static String get geminiModel =>
       dotenv.env['GEMINI_MODEL'] ?? 'gemini-flash-lite-latest';
+
+  /// Tried when [geminiModel] is overloaded; slower, but separate capacity.
+  static String get geminiFallbackModel =>
+      dotenv.env['GEMINI_FALLBACK_MODEL'] ?? 'gemini-flash-latest';
 }
