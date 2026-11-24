@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../../core/config/theme.dart';
+import '../../../core/ui/receipt_widgets.dart';
 import '../../groups/application/group_providers.dart';
 
 /// First-launch screen: guest mode only needs a display name.
@@ -31,64 +31,75 @@ class _OnboardingViewState extends ConsumerState<OnboardingView> {
 
   @override
   Widget build(BuildContext context) {
+    final canContinue = _controller.text.trim().isNotEmpty && !_saving;
     return Scaffold(
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primaryColor.withAlpha(25),
-                    shape: BoxShape.circle,
+        child: Column(
+          children: [
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(28, 56, 28, 16),
+                children: [
+                  Slip(
+                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 26),
+                    child: Column(
+                      children: [
+                        Text(
+                          'SPLIT BILL',
+                          style: AppFonts.money(
+                            size: 13,
+                            color: AppColors.muted,
+                          ).copyWith(letterSpacing: 2),
+                        ),
+                        const SizedBox(height: 10),
+                        const DashedRule(),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Vyfoť účtenku, rozdělte položky a hned víte, kdo '
+                          'komu kolik pošle.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 15, height: 1.5),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: const Icon(
-                    LucideIcons.receipt,
-                    size: 56,
-                    color: AppTheme.primaryColor,
+                  const SizedBox(height: 36),
+                  const Text(
+                    'Jak ti říkají?',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
                   ),
-                ),
-                const SizedBox(height: 24),
-                const Text(
-                  'Vítejte ve Split Bill',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Vyfoťte účtenku, rozdělte položky a hned víte, kdo komu kolik dluží.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-                const SizedBox(height: 32),
-                TextField(
-                  controller: _controller,
-                  autofocus: true,
-                  textCapitalization: TextCapitalization.words,
-                  textInputAction: TextInputAction.done,
-                  onChanged: (_) => setState(() {}),
-                  onSubmitted: (_) => _continue(),
-                  decoration: const InputDecoration(
-                    labelText: 'Jak vám říkají?',
-                    hintText: 'Např. Kája',
-                    border: OutlineInputBorder(),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Stačí jméno, registrace není potřeba.',
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: AppColors.mutedStrong,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _controller.text.trim().isEmpty || _saving
-                        ? null
-                        : _continue,
-                    child: const Text('Začít'),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _controller,
+                    autofocus: true,
+                    textCapitalization: TextCapitalization.words,
+                    textInputAction: TextInputAction.done,
+                    onChanged: (_) => setState(() {}),
+                    onSubmitted: (_) => _continue(),
+                    decoration: const InputDecoration(hintText: 'Např. Kája'),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: AppButton(
+                  label: 'Začít',
+                  onPressed: canContinue ? _continue : null,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

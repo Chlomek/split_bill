@@ -3,28 +3,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
-import 'package:qr_flutter/qr_flutter.dart';
-import 'package:share_plus/share_plus.dart';
-import '../../../core/config/env.dart';
 import '../../../core/config/theme.dart';
 import '../../../core/routing/route_names.dart';
-import '../../../core/services/deep_link_service.dart';
 import '../../../core/services/export_service.dart';
-import '../../../core/services/qr_payment_service.dart';
+import '../../../core/ui/receipt_widgets.dart';
 import '../../../core/utils/currency_formatter.dart';
 import '../../../core/utils/text_formatter.dart';
-import '../../auth/presentation/profile_sheet.dart';
+import '../../auth/presentation/iban_setup_sheet.dart';
 import '../../expenses/domain/expense.dart';
 import '../../expenses/presentation/add_expense_sheet.dart';
 import '../../settlements/domain/settlement.dart';
 import '../../settlements/domain/settlement_debt.dart';
 import '../application/group_providers.dart';
 import '../domain/group_member.dart';
+import 'create_group_sheet.dart';
+import 'group_visuals.dart';
 
-enum _GroupMenuAction { export, rename, delete }
+enum _GroupMenuAction { rename, delete }
 
-/// The hub of one group: who should pay whom (with QR payment and
-/// "mark as paid"), balances of all members, and the history of expenses.
+/// The hub of one group: who should pay whom (the person being paid shows a
+/// QR and confirms the money arrived), member balances, and the history.
 class GroupDetailScreen extends ConsumerWidget {
   final String groupId;
 
@@ -54,35 +52,97 @@ class GroupDetailScreen extends ConsumerWidget {
   }
 }
 
-class _GroupDetailView extends ConsumerWidget {
+class _GroupDetailView extends ConsumerStatefulWidget {
   final GroupDetail detail;
 
   const _GroupDetailView({required this.detail});
 
-  String get _groupId => detail.group.id;
+  @override
+  ConsumerState<_GroupDetailView> createState() => _GroupDetailViewState();
+}
+
+class _GroupDetailViewState extends ConsumerState<_GroupDetailView> {
+  /// Debt whose "Přišly peníze?" confirmation is open (from-to key).
+  String? _confirming;
+  bool _showAllHistory = false;
+
+  GroupDetail get d => widget.detail;
+  String get _groupId => d.group.id;
+
+  static String _key(SettlementDebt debt) =>
+      '${debt.fromMemberId}>${debt.toMemberId}';
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final history = <Object>[...detail.expenses, ...detail.settlements]
-      ..sort((a, b) => _dateOf(b).compareTo(_dateOf(a)));
-
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(detail.group.name),
-        actions: [
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            _header(context),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                children: [
+                  _settlementSlip(context),
+                  const SizedBox(height: 24),
+                  _members(context),
+                  const SizedBox(height: 24),
+                  _history(context),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: _bottomBar(context),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Header
+  // ---------------------------------------------------------------------
+
+  Widget _header(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+      child: Row(
+        children: [
           IconButton(
-            icon: const Icon(LucideIcons.userPlus),
-            tooltip: 'Pozvat do skupiny',
-            onPressed: () => _showInviteDialog(context),
+            tooltip: 'Zpět na skupiny',
+            onPressed: () => context.pop(),
+            icon: const Icon(LucideIcons.chevronLeft, size: 24),
+          ),
+          Expanded(
+            child: Text(
+              d.group.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () => shareInvite(d.group),
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.ink,
+              minimumSize: const Size(44, 44),
+            ),
+            icon: const Icon(LucideIcons.userPlus, size: 18),
+            label: const Text(
+              'Pozvat',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
           PopupMenuButton<_GroupMenuAction>(
             tooltip: 'Další možnosti',
-            onSelected: (action) => _onMenuAction(context, ref, action),
+            icon: const Icon(LucideIcons.ellipsisVertical, size: 20),
+            color: AppColors.slip,
+            onSelected: (action) => _onMenu(context, action),
             itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: _GroupMenuAction.export,
-                child: Text('Exportovat do CSV'),
-              ),
               PopupMenuItem(
                 value: _GroupMenuAction.rename,
                 child: Text('Přejmenovat skupinu'),
@@ -95,292 +155,448 @@ class _GroupDetailView extends ConsumerWidget {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Vyrovnání
+  // ---------------------------------------------------------------------
+
+  Widget _settlementSlip(BuildContext context) {
+    final meId = d.me?.id;
+    final paidToMe =
+        meId != null &&
+        d.owedToMe.isEmpty &&
+        d.settlements.any((s) => s.toMemberId == meId);
+
+    return Slip(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // --- Settlement overview ---
-          const _SectionTitle('Přehled vyrovnání'),
-          if (detail.debts.isEmpty)
-            const _InfoCard(
-              icon: LucideIcons.check,
-              text: 'Vše je vyrovnáno, nikdo nikomu nic nedluží.',
-            )
-          else
-            ...detail.debts.map(
-              (debt) => _DebtCard(
-                debt: debt,
-                fromName: detail.memberName(debt.fromMemberId),
-                toName: detail.memberName(debt.toMemberId),
-                onQr: () => _showQrPayment(context, ref, debt),
-                onMarkPaid: () => _confirmMarkPaid(context, ref, debt),
-              ),
-            ),
-          const SizedBox(height: 24),
-
-          // --- Member balances ---
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
-              const _SectionTitle('Zůstatky členů'),
-              Text(
-                TextFormatter.memberCount(detail.members.length),
-                style: const TextStyle(color: Colors.grey, fontSize: 13),
+              const Expanded(
+                child: Text(
+                  'Vyrovnání',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                ),
               ),
-            ],
-          ),
-          ...detail.members.map(
-            (member) => _MemberBalanceTile(
-              member: member,
-              balance: detail.balances[member.id] ?? 0,
-              isCurrentUser: member.id == detail.me?.id,
-            ),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              icon: const Icon(LucideIcons.plus, size: 18),
-              label: const Text('Přidat člena bez účtu'),
-              onPressed: () => _showAddMemberDialog(context, ref),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // --- History ---
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const _SectionTitle('Historie výdajů'),
-              Text(
-                'Celkem ${CurrencyFormatter.format(detail.totalSpent)}',
-                style: const TextStyle(color: Colors.grey, fontSize: 13),
-              ),
-            ],
-          ),
-          if (history.isEmpty)
-            const _InfoCard(
-              icon: LucideIcons.receipt,
-              text: 'Zatím žádné výdaje. Vyfoťte účtenku nebo zadejte výdaj ručně.',
-            )
-          else
-            ...history.map(
-              (entry) => entry is Expense
-                  ? _ExpenseTile(
-                      expense: entry,
-                      payerName: detail.memberName(entry.paidByMemberId),
-                      onTap: () => _showExpenseDetail(context, ref, entry),
-                    )
-                  : _SettlementTile(
-                      settlement: entry as Settlement,
-                      fromName: detail.memberName(entry.fromMemberId),
-                      toName: detail.memberName(entry.toMemberId),
-                      onTap: () => _confirmDeleteSettlement(context, ref, entry),
-                    ),
-            ),
-        ],
-      ),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+              if (d.debts.isNotEmpty)
+                Text(
+                  TextFormatter.plural(
+                    d.debts.length,
+                    'platba',
+                    'platby',
+                    'plateb',
                   ),
-                  icon: const Icon(Icons.edit_outlined),
-                  label: const Text('Zadat ručně'),
-                  onPressed: () => showAddExpenseSheet(context, _groupId),
+                  style: const TextStyle(fontSize: 12, color: AppColors.muted),
                 ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (d.debts.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'Vše je vyrovnáno, nikdo nikomu nic nedluží.',
+                style: TextStyle(fontSize: 14, color: AppColors.muted),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  icon: const Icon(LucideIcons.camera),
-                  label: const Text('Vyfotit účtenku'),
-                  onPressed: () => context.push(RouteNames.scanReceipt(_groupId)),
+            ),
+          for (var i = 0; i < d.debts.length; i++)
+            _debtRow(context, d.debts[i], first: i == 0),
+          if (paidToMe) ...[
+            const SizedBox(height: 8),
+            const DashedRule(),
+            const SizedBox(height: 10),
+            const Row(
+              children: [
+                Icon(LucideIcons.check, size: 18, color: AppColors.emeraldDark),
+                SizedBox(width: 8),
+                Text(
+                  'Tobě už všichni zaplatili',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.emeraldDark,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _debtRow(
+    BuildContext context,
+    SettlementDebt debt, {
+    required bool first,
+  }) {
+    final meId = d.me?.id;
+    final incoming = debt.toMemberId == meId;
+    final outgoing = debt.fromMemberId == meId;
+    final from = d.memberName(debt.fromMemberId);
+    final to = d.memberName(debt.toMemberId);
+    final confirming = _confirming == _key(debt);
+
+    final label = incoming
+        ? TextSpan(
+            children: [
+              TextSpan(
+                text: from,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const TextSpan(
+                text: ' ti dluží',
+                style: TextStyle(color: AppColors.muted),
+              ),
+            ],
+          )
+        : outgoing
+        ? TextSpan(
+            children: [
+              const TextSpan(
+                text: 'Dlužíš ',
+                style: TextStyle(color: AppColors.muted),
+              ),
+              TextSpan(
+                text: to,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ],
+          )
+        : TextSpan(
+            children: [
+              TextSpan(
+                text: from,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const TextSpan(
+                text: ' → ',
+                style: TextStyle(color: AppColors.muted),
+              ),
+              TextSpan(
+                text: to,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ],
+          );
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      decoration: BoxDecoration(
+        border: first
+            ? null
+            : const Border(top: BorderSide(color: AppColors.hairline)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LeaderRow(
+            label: Text.rich(
+              label,
+              style: const TextStyle(fontSize: 15),
+              overflow: TextOverflow.ellipsis,
+            ),
+            amount: CurrencyFormatter.compact(debt.amount),
+            amountStyle: AppFonts.money(
+              color: incoming
+                  ? AppColors.emerald
+                  : (outgoing ? AppColors.red : AppColors.ink),
+            ),
+          ),
+          if (incoming && !confirming) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: AppButton(
+                    label: 'Ukázat QR',
+                    icon: LucideIcons.qrCode,
+                    kind: AppButtonKind.outline,
+                    height: 44,
+                    onPressed: () => _openQr(context, debt),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: AppButton(
+                    label: 'Přišly peníze?',
+                    kind: AppButtonKind.outline,
+                    height: 44,
+                    onPressed: () => setState(() => _confirming = _key(debt)),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (confirming) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.soft,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: 'Zkontroluj v bance, že ti $from poslal(a) ',
+                        ),
+                        TextSpan(
+                          text: CurrencyFormatter.compact(debt.amount),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const TextSpan(text: '. Zůstatky se pak přepočítají.'),
+                      ],
+                    ),
+                    style: const TextStyle(fontSize: 14, height: 1.4),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: AppButton(
+                          label: 'Ano, přišly',
+                          height: 44,
+                          onPressed: () => _markPaid(context, debt),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: AppButton(
+                          label: 'Ještě ne',
+                          kind: AppButtonKind.ghost,
+                          height: 44,
+                          onPressed: () => setState(() => _confirming = null),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openQr(BuildContext context, SettlementDebt debt) async {
+    final router = GoRouter.of(context);
+    var iban = await ref.read(ibanProvider.future);
+    if (!context.mounted) return;
+    if (iban == null || iban.isEmpty) {
+      iban = await showIbanSetupSheet(
+        context,
+        reason:
+            '${d.memberName(debt.fromMemberId)} ti dluží '
+            '${CurrencyFormatter.compact(debt.amount)}.',
+        saveLabel: 'Uložit a ukázat QR',
+      );
+      if (iban == null) return;
+    }
+    router.push(
+      RouteNames.qrPayment(_groupId, fromMemberId: debt.fromMemberId),
+    );
+  }
+
+  Future<void> _markPaid(BuildContext context, SettlementDebt debt) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final actions = ref.read(groupActionsProvider);
+    setState(() => _confirming = null);
+    final settlement = await actions.addSettlement(
+      groupId: _groupId,
+      fromMemberId: debt.fromMemberId,
+      toMemberId: debt.toMemberId,
+      amount: debt.amount,
+    );
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          '${d.memberName(debt.fromMemberId)} · '
+          '${CurrencyFormatter.compact(debt.amount)} označeno jako zaplacené',
+        ),
+        action: SnackBarAction(
+          label: 'Zpět',
+          onPressed: () => actions.deleteSettlement(settlement.id),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Členové
+  // ---------------------------------------------------------------------
+
+  Widget _members(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SectionTitle(
+          'Členové',
+          trailing: Text(
+            'celkem ${CurrencyFormatter.compact(d.totalSpent)}',
+            style: const TextStyle(fontSize: 12, color: AppColors.muted),
+          ),
+        ),
+        PaperCard(
+          child: Column(
+            children: [
+              for (var i = 0; i < d.members.length; i++)
+                _memberRow(context, d.members[i], first: i == 0),
+              InkWell(
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(16),
+                ),
+                onTap: () => _addMember(context),
+                child: Container(
+                  height: 52,
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  decoration: const BoxDecoration(
+                    border: Border(top: BorderSide(color: AppColors.hairline)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(
+                        LucideIcons.plus,
+                        size: 18,
+                        color: AppColors.emerald,
+                      ),
+                      SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'Přidat člena bez aplikace',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.emerald,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
           ),
         ),
-      ),
+      ],
     );
   }
 
-  static DateTime _dateOf(Object entry) =>
-      entry is Expense ? entry.createdAt : (entry as Settlement).createdAt;
-
-  // ---------------------------------------------------------------------
-  // Settlement actions
-  // ---------------------------------------------------------------------
-
-  Future<void> _showQrPayment(
+  Widget _memberRow(
     BuildContext context,
-    WidgetRef ref,
-    SettlementDebt debt,
-  ) async {
-    final creditorName = detail.memberName(debt.toMemberId);
-
-    // The IBAN never leaves the creditor's phone, so only the creditor's own
-    // device can build the payment code.
-    if (debt.toMemberId != detail.me?.id) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('QR platba'),
-          content: Text(
-            'QR kód pro tuto platbu zobrazí $creditorName ve své aplikaci. '
-            'IBAN příjemce zůstává uložený jen v jeho zařízení.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Rozumím'),
-            ),
-          ],
-        ),
-      );
-      return;
+    GroupMember member, {
+    required bool first,
+  }) {
+    final isMe = member.id == d.me?.id;
+    final balance = d.balances[member.id] ?? 0;
+    final String status;
+    if (isMe) {
+      status = balance > 0.005
+          ? 'Dostaneš celkem'
+          : (balance < -0.005 ? 'Dlužíš celkem' : 'Vyrovnáno');
+    } else {
+      status = balance > 0.005
+          ? 'dostane'
+          : (balance < -0.005 ? 'dluží' : 'vyrovnáno');
     }
 
-    final iban = await ref.read(ibanProvider.future);
-    if (!context.mounted) return;
-
-    if (iban == null || iban.isEmpty) {
-      final openProfile = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Chybí váš IBAN'),
-          content: const Text(
-            'Aby vám ostatní mohli zaplatit přes QR kód, uložte si nejdřív '
-            'svůj IBAN v profilu.',
+    return Container(
+      constraints: const BoxConstraints(minHeight: 56),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        border: first
+            ? null
+            : const Border(top: BorderSide(color: AppColors.hairline)),
+      ),
+      child: Row(
+        children: [
+          InitialsAvatar(
+            name: isMe ? 'Ty' : member.displayName,
+            tint: memberTint(d, member.id),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Zrušit'),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isMe ? 'Ty' : member.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        member.isVirtual ? 'bez aplikace · $status' : status,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    ),
+                    if (member.isVirtual)
+                      Flexible(
+                        child: InkWell(
+                          onTap: () => shareInvite(d.group),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 4,
+                            ),
+                            child: Text(
+                              '· pozvat',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.emeraldDark,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
             ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Otevřít profil'),
+          ),
+          Text(
+            isMe
+                ? CurrencyFormatter.compact(balance, signed: true)
+                : CurrencyFormatter.compact(balance.abs()),
+            style: AppFonts.money(
+              size: 14,
+              color: isMe ? AppTheme.balanceColor(balance) : AppColors.ink,
             ),
-          ],
-        ),
-      );
-      if (openProfile == true && context.mounted) await showProfileSheet(context);
-      return;
-    }
-
-    final payload = QrPaymentService.generateSpayd(
-      iban: iban,
-      amount: debt.amount,
-      currency: debt.currency,
-      message: 'Split Bill',
-    );
-
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('${detail.memberName(debt.fromMemberId)} ➔ $creditorName'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              CurrencyFormatter.format(debt.amount),
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 220,
-              width: 220,
-              child: QrImageView(
-                data: payload,
-                version: QrVersions.auto,
-                backgroundColor: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Ukažte kód dlužníkovi, naskenuje ho ve své bankovní aplikaci.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Zavřít'),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _confirmMarkPaid(
-    BuildContext context,
-    WidgetRef ref,
-    SettlementDebt debt,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Označit za zaplacené?'),
-        content: Text(
-          '${detail.memberName(debt.fromMemberId)} zaplatil(a) '
-          '${CurrencyFormatter.format(debt.amount)} členovi '
-          '${detail.memberName(debt.toMemberId)}.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Zrušit'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Zaplaceno'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    await ref.read(groupActionsProvider).addSettlement(
-          groupId: _groupId,
-          fromMemberId: debt.fromMemberId,
-          toMemberId: debt.toMemberId,
-          amount: debt.amount,
-        );
-  }
-
-  Future<void> _confirmDeleteSettlement(
-    BuildContext context,
-    WidgetRef ref,
-    Settlement settlement,
-  ) async {
-    final confirmed = await _confirmDelete(
-      context,
-      title: 'Smazat vyrovnání?',
-      message:
-          'Platba ${CurrencyFormatter.format(settlement.amount)} se odebere a '
-          'dluh se vrátí do přehledu.',
-    );
-    if (confirmed) {
-      await ref.read(groupActionsProvider).deleteSettlement(settlement.id);
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  // Members
-  // ---------------------------------------------------------------------
-
-  Future<void> _showAddMemberDialog(BuildContext context, WidgetRef ref) async {
+  Future<void> _addMember(BuildContext context) async {
     final name = await _promptText(
       context,
-      title: 'Přidat člena bez účtu',
-      label: 'Jméno',
-      hint: 'Např. Honza',
+      title: 'Přidat člena bez aplikace',
+      hint: 'Jméno, třeba Honza',
       confirmLabel: 'Přidat',
     );
     if (name == null) return;
@@ -388,170 +604,165 @@ class _GroupDetailView extends ConsumerWidget {
   }
 
   // ---------------------------------------------------------------------
-  // Expenses
+  // Historie
   // ---------------------------------------------------------------------
 
-  Future<void> _showExpenseDetail(
-    BuildContext context,
-    WidgetRef ref,
-    Expense expense,
-  ) async {
-    final splits =
-        detail.splits.where((s) => s.expenseId == expense.id).toList();
+  Widget _history(BuildContext context) {
+    final entries = <Object>[...d.expenses, ...d.settlements]
+      ..sort((a, b) => _dateOf(b).compareTo(_dateOf(a)));
+    final visible = _showAllHistory ? entries : entries.take(3).toList();
 
-    final delete = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SectionTitle(
+          'Historie výdajů',
+          trailing: entries.isEmpty
+              ? null
+              : TextButton.icon(
+                  onPressed: _exportCsv,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.ink,
+                    minimumSize: const Size(44, 44),
+                  ),
+                  icon: const Icon(LucideIcons.download, size: 16),
+                  label: const Text(
+                    'Export CSV',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
+        ),
+        if (entries.isEmpty)
+          const PaperCard(
+            radius: 14,
+            padding: EdgeInsets.all(14),
+            child: Text(
+              'Zatím žádné výdaje. Vyfoť účtenku nebo zadej výdaj ručně.',
+              style: TextStyle(fontSize: 14, color: AppColors.muted),
+            ),
+          ),
+        for (final entry in visible) ...[
+          entry is Expense
+              ? _expenseRow(context, entry)
+              : _settlementRow(context, entry as Settlement),
+          const SizedBox(height: 8),
+        ],
+        if (!_showAllHistory && entries.length > 3)
+          TextButton(
+            onPressed: () => setState(() => _showAllHistory = true),
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.emeraldDark,
+              minimumSize: const Size.fromHeight(44),
+            ),
+            child: Text(
+              'Zobrazit všech ${entries.length}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _historyTile({
+    required String title,
+    required String meta,
+    required String amount,
+    required VoidCallback onTap,
+    bool muted = false,
+  }) {
+    return Material(
+      color: muted ? AppColors.doneFill : AppColors.slip,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.line),
       ),
-      builder: (context) => SafeArea(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+          child: Row(
             children: [
-              Text(
-                expense.title,
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '${DateFormat('d. M. yyyy').format(expense.createdAt)} • '
-                'Platil(a): ${detail.memberName(expense.paidByMemberId)} • '
-                '${CurrencyFormatter.format(expense.totalAmount)}',
-                style: const TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 16),
-              const Text('Podíly', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
-              ...splits.map(
-                (split) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(detail.memberName(split.memberId)),
-                      Text(CurrencyFormatter.format(split.amountOwed)),
-                    ],
-                  ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      meta,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.negativeColor,
-                  ),
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('Smazat výdaj'),
-                  onPressed: () => Navigator.of(context).pop(true),
-                ),
+              const SizedBox(width: 8),
+              Text(amount, style: AppFonts.money(size: 14)),
+              const SizedBox(width: 4),
+              const Icon(
+                LucideIcons.chevronRight,
+                size: 16,
+                color: AppColors.outline,
               ),
             ],
           ),
         ),
       ),
     );
+  }
 
-    if (delete != true || !context.mounted) return;
-    final confirmed = await _confirmDelete(
+  Widget _expenseRow(BuildContext context, Expense expense) {
+    final payer = expense.paidByMemberId == d.me?.id
+        ? 'ty'
+        : d.memberName(expense.paidByMemberId);
+    return _historyTile(
+      title: expense.title,
+      meta: 'Platil(a): $payer · ${TextFormatter.dateTime(expense.createdAt)}',
+      amount: CurrencyFormatter.compact(expense.totalAmount),
+      onTap: () => context.push(RouteNames.expenseDetail(_groupId, expense.id)),
+    );
+  }
+
+  Widget _settlementRow(BuildContext context, Settlement settlement) {
+    return _historyTile(
+      title:
+          '${displayName(d, settlement.fromMemberId)} → '
+          '${displayName(d, settlement.toMemberId)}',
+      meta: 'Vyrovnání · ${TextFormatter.dateTime(settlement.createdAt)}',
+      amount: CurrencyFormatter.compact(settlement.amount),
+      muted: true,
+      onTap: () => _confirmDeleteSettlement(context, settlement),
+    );
+  }
+
+  static DateTime _dateOf(Object entry) =>
+      entry is Expense ? entry.createdAt : (entry as Settlement).createdAt;
+
+  Future<void> _confirmDeleteSettlement(
+    BuildContext context,
+    Settlement settlement,
+  ) async {
+    final confirmed = await _confirm(
       context,
-      title: 'Smazat výdaj?',
-      message: 'Výdaj „${expense.title}“ se odebere a zůstatky se přepočítají.',
+      title: 'Smazat vyrovnání?',
+      message:
+          'Platba ${CurrencyFormatter.compact(settlement.amount)} se '
+          'odebere a dluh se vrátí do přehledu.',
+      confirmLabel: 'Smazat',
     );
     if (confirmed) {
-      await ref.read(groupActionsProvider).deleteExpense(expense.id);
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  // Group actions
-  // ---------------------------------------------------------------------
-
-  void _showInviteDialog(BuildContext context) {
-    final link = DeepLinkService(appDomain: Env.appDomain)
-        .buildInviteUniversalLink(detail.group.inviteCode);
-
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Pozvat do skupiny'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Kód pozvánky:'),
-            const SizedBox(height: 4),
-            SelectableText(
-              detail.group.inviteCode,
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 2,
-                color: AppTheme.primaryColor,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Připojení přes odkaz začne fungovat s online synchronizací. '
-              'Do té doby přidejte přátele jako členy bez účtu.',
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Zavřít'),
-          ),
-          ElevatedButton.icon(
-            icon: const Icon(LucideIcons.share2, size: 16),
-            label: const Text('Sdílet odkaz'),
-            onPressed: () {
-              Navigator.of(context).pop();
-              Share.share(
-                'Přidej se do skupiny „${detail.group.name}“ ve Split Bill: $link',
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _onMenuAction(
-    BuildContext context,
-    WidgetRef ref,
-    _GroupMenuAction action,
-  ) async {
-    switch (action) {
-      case _GroupMenuAction.export:
-        await _exportCsv();
-      case _GroupMenuAction.rename:
-        final name = await _promptText(
-          context,
-          title: 'Přejmenovat skupinu',
-          label: 'Název skupiny',
-          initialValue: detail.group.name,
-          confirmLabel: 'Uložit',
-        );
-        if (name != null) {
-          await ref.read(groupActionsProvider).renameGroup(_groupId, name);
-        }
-      case _GroupMenuAction.delete:
-        final confirmed = await _confirmDelete(
-          context,
-          title: 'Smazat skupinu?',
-          message:
-              'Skupina „${detail.group.name}“ se smaže včetně všech výdajů a '
-              'vyrovnání. Tuto akci nelze vrátit.',
-        );
-        if (!confirmed) return;
-        await ref.read(groupActionsProvider).deleteGroup(_groupId);
-        if (context.mounted) context.go(RouteNames.home);
+      await ref.read(groupActionsProvider).deleteSettlement(settlement.id);
     }
   }
 
@@ -560,381 +771,190 @@ class _GroupDetailView extends ConsumerWidget {
     final rows = <List<dynamic>>[
       ['Datum', 'Typ', 'Název', 'Platil', 'Komu / za koho', 'Částka', 'Měna'],
     ];
-
-    for (final expense in detail.expenses) {
-      for (final split
-          in detail.splits.where((s) => s.expenseId == expense.id)) {
+    for (final expense in d.expenses) {
+      for (final split in d.splitsOf(expense.id)) {
         rows.add([
           dateFormat.format(expense.createdAt),
           'Výdaj',
           expense.title,
-          detail.memberName(expense.paidByMemberId),
-          detail.memberName(split.memberId),
+          d.memberName(expense.paidByMemberId),
+          d.memberName(split.memberId),
           split.amountOwed.toStringAsFixed(2),
           'CZK',
         ]);
       }
     }
-
-    for (final settlement in detail.settlements) {
+    for (final s in d.settlements) {
       rows.add([
-        dateFormat.format(settlement.createdAt),
+        dateFormat.format(s.createdAt),
         'Vyrovnání',
         '',
-        detail.memberName(settlement.fromMemberId),
-        detail.memberName(settlement.toMemberId),
-        settlement.amount.toStringAsFixed(2),
+        d.memberName(s.fromMemberId),
+        d.memberName(s.toMemberId),
+        s.amount.toStringAsFixed(2),
         'CZK',
       ]);
     }
-
     await ExportService.exportAndShareExpensesCsv(
-      groupName: detail.group.name,
+      groupName: d.group.name,
       rows: rows,
     );
   }
 
   // ---------------------------------------------------------------------
-  // Dialog helpers
+  // Bottom bar and menu
   // ---------------------------------------------------------------------
 
-  /// Asks for a single line of text; returns null when cancelled or empty.
+  Widget _bottomBar(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.paper,
+        border: Border(top: BorderSide(color: AppColors.line)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: AppButton(
+                  label: 'Vyfotit účtenku',
+                  icon: LucideIcons.camera,
+                  fontSize: 15,
+                  horizontalPadding: 10,
+                  onPressed: () =>
+                      context.push(RouteNames.scanReceipt(_groupId)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: AppButton(
+                  label: 'Zadat ručně',
+                  icon: LucideIcons.pencil,
+                  fontSize: 15,
+                  horizontalPadding: 10,
+                  kind: AppButtonKind.outline,
+                  onPressed: () => showAddExpenseSheet(context, _groupId),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onMenu(BuildContext context, _GroupMenuAction action) async {
+    switch (action) {
+      case _GroupMenuAction.rename:
+        final name = await _promptText(
+          context,
+          title: 'Přejmenovat skupinu',
+          hint: 'Název skupiny',
+          initialValue: d.group.name,
+          confirmLabel: 'Uložit',
+        );
+        if (name != null) {
+          await ref.read(groupActionsProvider).renameGroup(_groupId, name);
+        }
+      case _GroupMenuAction.delete:
+        final confirmed = await _confirm(
+          context,
+          title: 'Smazat skupinu?',
+          message:
+              'Skupina „${d.group.name}“ se smaže včetně všech výdajů a '
+              'vyrovnání. Tuto akci nelze vrátit.',
+          confirmLabel: 'Smazat',
+        );
+        if (!confirmed) return;
+        await ref.read(groupActionsProvider).deleteGroup(_groupId);
+        if (context.mounted) context.go(RouteNames.home);
+    }
+  }
+
   Future<String?> _promptText(
     BuildContext context, {
     required String title,
-    required String label,
+    required String hint,
     required String confirmLabel,
-    String? hint,
     String? initialValue,
-  }) async {
+  }) {
     final controller = TextEditingController(text: initialValue);
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.sentences,
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-          decoration: InputDecoration(
-            labelText: label,
-            hintText: hint,
-            border: const OutlineInputBorder(),
+    return showPaperSheet<String>(
+      context,
+      (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SheetHeader(title: title),
+          const SizedBox(height: 8),
+          TextField(
+            controller: controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            onSubmitted: (v) =>
+                Navigator.of(context).pop(v.trim().isEmpty ? null : v.trim()),
+            decoration: InputDecoration(hintText: hint),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Zrušit'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: Text(confirmLabel),
+          const SizedBox(height: 16),
+          AppButton(
+            label: confirmLabel,
+            onPressed: () {
+              final v = controller.text.trim();
+              Navigator.of(context).pop(v.isEmpty ? null : v);
+            },
           ),
         ],
       ),
     );
-    final trimmed = value?.trim() ?? '';
-    return trimmed.isEmpty ? null : trimmed;
   }
 
-  Future<bool> _confirmDelete(
+  Future<bool> _confirm(
     BuildContext context, {
     required String title,
     required String message,
+    required String confirmLabel,
   }) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Zrušit'),
+    final result = await showPaperSheet<bool>(
+      context,
+      (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SheetHeader(title: title, showClose: false),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: const TextStyle(
+              fontSize: 15,
+              height: 1.5,
+              color: AppColors.body,
+            ),
           ),
-          TextButton(
-            style: TextButton.styleFrom(foregroundColor: AppTheme.negativeColor),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Smazat'),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: AppButton(
+                  label: 'Zrušit',
+                  kind: AppButtonKind.ghost,
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: AppButton(
+                  label: confirmLabel,
+                  kind: AppButtonKind.danger,
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
-    return confirmed == true;
-  }
-}
-
-class _SectionTitle extends StatelessWidget {
-  final String text;
-
-  const _SectionTitle(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Text(
-        text,
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-}
-
-class _InfoCard extends StatelessWidget {
-  final IconData icon;
-  final String text;
-
-  const _InfoCard({required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.grey),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(text, style: const TextStyle(color: Colors.grey)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DebtCard extends StatelessWidget {
-  final SettlementDebt debt;
-  final String fromName;
-  final String toName;
-  final VoidCallback onQr;
-  final VoidCallback onMarkPaid;
-
-  const _DebtCard({
-    required this.debt,
-    required this.fromName,
-    required this.toName,
-    required this.onQr,
-    required this.onMarkPaid,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '$fromName ➔ $toName',
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                Text(
-                  CurrencyFormatter.format(debt.amount),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton.icon(
-                  icon: const Icon(LucideIcons.qrCode, size: 16),
-                  label: const Text('QR platba'),
-                  onPressed: onQr,
-                ),
-                const SizedBox(width: 4),
-                TextButton.icon(
-                  icon: const Icon(LucideIcons.check, size: 16),
-                  label: const Text('Zaplaceno'),
-                  onPressed: onMarkPaid,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MemberBalanceTile extends StatelessWidget {
-  final GroupMember member;
-  final double balance;
-  final bool isCurrentUser;
-
-  const _MemberBalanceTile({
-    required this.member,
-    required this.balance,
-    required this.isCurrentUser,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = AppTheme.balanceColor(balance);
-    final name = member.displayName;
-    final String status = balance > 0.005
-        ? 'Má dostat zpět'
-        : (balance < -0.005 ? 'Dluží skupině' : 'Vyrovnáno');
-
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: color.withAlpha(30),
-          child: Text(
-            name.isNotEmpty ? name.characters.first.toUpperCase() : '?',
-            style: TextStyle(color: color, fontWeight: FontWeight.bold),
-          ),
-        ),
-        title: Row(
-          children: [
-            Flexible(
-              child: Text(
-                name,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
-            if (isCurrentUser) const _Badge('Vy', AppTheme.primaryColor),
-            if (member.isVirtual) const _Badge('bez účtu', Colors.grey),
-          ],
-        ),
-        subtitle: Text(status, style: const TextStyle(fontSize: 12)),
-        trailing: Text(
-          CurrencyFormatter.format(balance),
-          style: TextStyle(
-            color: color,
-            fontWeight: FontWeight.bold,
-            fontSize: 16,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Badge extends StatelessWidget {
-  final String text;
-  final Color color;
-
-  const _Badge(this.text, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(left: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withAlpha(30),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-}
-
-class _ExpenseTile extends StatelessWidget {
-  final Expense expense;
-  final String payerName;
-  final VoidCallback onTap;
-
-  const _ExpenseTile({
-    required this.expense,
-    required this.payerName,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: AppTheme.primaryColor.withAlpha(30),
-          child: const Icon(
-            LucideIcons.receipt,
-            color: AppTheme.primaryColor,
-            size: 20,
-          ),
-        ),
-        title: Text(
-          expense.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: Text(
-          'Platil(a): $payerName • ${TextFormatter.relativeDate(expense.createdAt)}',
-        ),
-        trailing: Text(
-          CurrencyFormatter.format(expense.totalAmount),
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        onTap: onTap,
-      ),
-    );
-  }
-}
-
-class _SettlementTile extends StatelessWidget {
-  final Settlement settlement;
-  final String fromName;
-  final String toName;
-  final VoidCallback onTap;
-
-  const _SettlementTile({
-    required this.settlement,
-    required this.fromName,
-    required this.toName,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: Colors.grey.withAlpha(40),
-          child: const Icon(LucideIcons.arrowRightLeft, color: Colors.grey, size: 20),
-        ),
-        title: Text(
-          '$fromName ➔ $toName',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: Text(
-          'Vyrovnání • ${TextFormatter.relativeDate(settlement.createdAt)}',
-        ),
-        trailing: Text(
-          CurrencyFormatter.format(settlement.amount),
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        onTap: onTap,
-      ),
-    );
+    return result ?? false;
   }
 }

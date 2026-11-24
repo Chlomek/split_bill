@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/auth/domain/user_profile.dart';
 import '../../features/expenses/domain/expense.dart';
+import '../../features/expenses/domain/expense_item.dart';
 import '../../features/expenses/domain/expense_split.dart';
 import '../../features/groups/domain/group.dart';
 import '../../features/groups/domain/group_member.dart';
@@ -22,6 +23,7 @@ class LocalStore {
   final List<GroupMember> members = [];
   final List<Expense> expenses = [];
   final List<ExpenseSplit> splits = [];
+  final List<ExpenseItem> expenseItems = [];
   final List<Settlement> settlements = [];
 
   LocalStore(this._prefs) {
@@ -51,6 +53,7 @@ class LocalStore {
     members.addAll(read('members', GroupMember.fromJson));
     expenses.addAll(read('expenses', Expense.fromJson));
     splits.addAll(read('splits', ExpenseSplit.fromJson));
+    expenseItems.addAll(read('expense_items', ExpenseItem.fromJson));
     settlements.addAll(read('settlements', Settlement.fromJson));
   }
 
@@ -62,6 +65,7 @@ class LocalStore {
       'members': members.map((e) => e.toJson()).toList(),
       'expenses': expenses.map((e) => e.toJson()).toList(),
       'splits': splits.map((e) => e.toJson()).toList(),
+      'expense_items': expenseItems.map((e) => e.toJson()).toList(),
       'settlements': settlements.map((e) => e.toJson()).toList(),
     };
     await _prefs.setString(storageKey, jsonEncode(doc));

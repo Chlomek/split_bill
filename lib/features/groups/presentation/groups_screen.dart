@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../../core/config/theme.dart';
 import '../../../core/routing/route_names.dart';
+import '../../../core/ui/receipt_widgets.dart';
 import '../../../core/utils/currency_formatter.dart';
 import '../../../core/utils/text_formatter.dart';
 import '../../auth/presentation/onboarding_view.dart';
 import '../../auth/presentation/profile_sheet.dart';
 import '../application/group_providers.dart';
+import 'create_group_sheet.dart';
+import 'group_visuals.dart';
 
-/// First screen of the app: all groups of the user with the user's balance in
-/// each of them. On first launch it shows the guest onboarding instead.
+/// First screen: what to settle today, and all groups with the user's
+/// balance in each. On first launch it shows the guest onboarding instead.
 class GroupsScreen extends ConsumerWidget {
   const GroupsScreen({super.key});
 
@@ -22,8 +26,9 @@ class GroupsScreen extends ConsumerWidget {
     return profile.when(
       loading: () =>
           const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (error, _) =>
-          Scaffold(body: Center(child: Text('Nepodařilo se načíst data: $error'))),
+      error: (error, _) => Scaffold(
+        body: Center(child: Text('Nepodařilo se načíst data: $error')),
+      ),
       data: (user) =>
           user == null ? const OnboardingView() : const _GroupsView(),
     );
@@ -36,225 +41,110 @@ class _GroupsView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final groupsAsync = ref.watch(groupListProvider);
+    final profile = ref.watch(profileProvider).valueOrNull;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Moje skupiny'),
-        actions: [
-          IconButton(
-            icon: const Icon(LucideIcons.user),
-            tooltip: 'Můj profil a IBAN',
-            onPressed: () => showProfileSheet(context),
-          ),
-        ],
-      ),
-      body: groupsAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) =>
-            Center(child: Text('Nepodařilo se načíst skupiny: $error')),
-        data: (groups) {
-          final totalBalance = groups.fold<double>(
-            0.0,
-            (sum, g) => sum + (g.me != null ? g.balances[g.me!.id] ?? 0 : 0),
-          );
-
-          return ListView(
-            padding: const EdgeInsets.all(16),
+      body: SafeArea(
+        child: groupsAsync.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, _) =>
+              Center(child: Text('Nepodařilo se načíst skupiny: $error')),
+          data: (groups) => Column(
             children: [
-              _TotalBalanceCard(totalBalance: totalBalance),
-              const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Vaše skupiny',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  TextButton.icon(
-                    icon: const Icon(LucideIcons.plus, size: 18),
-                    label: const Text('Nová skupina'),
-                    onPressed: () => _showCreateGroupDialog(context, ref),
-                  ),
-                ],
+              _Header(name: profile?.name ?? ''),
+              Expanded(
+                child: groups.isEmpty
+                    ? const _EmptyState()
+                    : ListView(
+                        padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                        children: [
+                          _TodaySlip(groups: groups),
+                          const SizedBox(height: 26),
+                          SectionTitle(
+                            'Skupiny',
+                            trailing: Text(
+                              TextFormatter.plural(
+                                groups.length,
+                                'skupina',
+                                'skupiny',
+                                'skupin',
+                              ),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.muted,
+                              ),
+                            ),
+                          ),
+                          for (final group in groups) ...[
+                            _GroupCard(detail: group),
+                            const SizedBox(height: 10),
+                          ],
+                        ],
+                      ),
               ),
-              const SizedBox(height: 12),
-              if (groups.isEmpty)
-                const _EmptyGroups()
-              else
-                ...groups.map(
-                  (group) => _GroupCard(
-                    detail: group,
-                    onTap: () =>
-                        context.push(RouteNames.groupDetail(group.group.id)),
-                  ),
-                ),
-              const SizedBox(height: 16),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                icon: const Icon(LucideIcons.link),
-                label: const Text('Připojit se ke skupině kódem'),
-                onPressed: () => _showJoinInfoDialog(context),
-              ),
+              _BottomActions(empty: groups.isEmpty),
             ],
-          );
-        },
-      ),
-    );
-  }
-
-  Future<void> _showCreateGroupDialog(BuildContext context, WidgetRef ref) async {
-    final controller = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Nová skupina'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.sentences,
-          onSubmitted: (value) => Navigator.of(context).pop(value),
-          decoration: const InputDecoration(
-            labelText: 'Název skupiny',
-            hintText: 'Např. Hory 2026, Spolubydlící',
-            border: OutlineInputBorder(),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Zrušit'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('Vytvořit'),
-          ),
-        ],
-      ),
-    );
-
-    final trimmed = name?.trim() ?? '';
-    if (trimmed.isEmpty) return;
-
-    final group = await ref.read(groupActionsProvider).createGroup(trimmed);
-    if (context.mounted) context.push(RouteNames.groupDetail(group.id));
-  }
-
-  void _showJoinInfoDialog(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Připojení kódem'),
-        content: const Text(
-          'Skupiny jsou zatím uložené jen v tomto zařízení. Připojení ke '
-          'skupině někoho jiného bude fungovat, jakmile přibude online '
-          'synchronizace.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Rozumím'),
-          ),
-        ],
       ),
     );
   }
 }
 
-class _EmptyGroups extends StatelessWidget {
-  const _EmptyGroups();
+class _Header extends StatelessWidget {
+  final String name;
+
+  const _Header({required this.name});
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 32),
-      child: Column(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      child: Row(
         children: [
-          Icon(LucideIcons.users, size: 40, color: Colors.grey),
-          SizedBox(height: 12),
-          Text(
-            'Zatím nemáte žádnou skupinu',
-            style: TextStyle(fontWeight: FontWeight.w600),
+          const Expanded(
+            child: Text(
+              'Moje skupiny',
+              style: TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.6,
+              ),
+            ),
           ),
-          SizedBox(height: 4),
-          Text(
-            'Vytvořte první a přidejte do ní přátele.',
-            style: TextStyle(color: Colors.grey),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TotalBalanceCard extends StatelessWidget {
-  final double totalBalance;
-
-  const _TotalBalanceCard({required this.totalBalance});
-
-  @override
-  Widget build(BuildContext context) {
-    final isPositive = totalBalance > 0.005;
-    final isNegative = totalBalance < -0.005;
-
-    final String statusText = isPositive
-        ? 'Celkově vám přátelé dluží'
-        : (isNegative
-            ? 'Celkově dlužíte přátelům'
-            : 'Všechny vaše účty jsou vyrovnané');
-
-    final List<Color> gradient = isPositive
-        ? const [Color(0xFF10B981), Color(0xFF059669)]
-        : (isNegative
-            ? const [Color(0xFFEF4444), Color(0xFFDC2626)]
-            : const [Color(0xFF4B5563), Color(0xFF374151)]);
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: gradient,
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: gradient.first.withAlpha(60),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                statusText,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
+          Semantics(
+            button: true,
+            label: 'Profil a IBAN',
+            child: Material(
+              color: AppColors.slip,
+              shape: const StadiumBorder(
+                side: BorderSide(color: AppColors.outline),
+              ),
+              child: InkWell(
+                customBorder: const StadiumBorder(),
+                onTap: () => showProfileSheet(context),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(6, 6, 14, 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InitialsAvatar(
+                        name: name.isEmpty ? 'Ty' : name,
+                        tint: AppColors.mint,
+                        size: 32,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Profil',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const Icon(LucideIcons.wallet, color: Colors.white70, size: 20),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            CurrencyFormatter.format(totalBalance.abs()),
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-              letterSpacing: -0.5,
             ),
           ),
         ],
@@ -263,48 +153,196 @@ class _TotalBalanceCard extends StatelessWidget {
   }
 }
 
-class _GroupCard extends StatelessWidget {
-  final GroupDetail detail;
-  final VoidCallback onTap;
+/// "Dnes vyřešit": every open debt that involves the user, across groups.
+class _TodaySlip extends StatelessWidget {
+  final List<GroupDetail> groups;
 
-  const _GroupCard({required this.detail, required this.onTap});
+  const _TodaySlip({required this.groups});
 
   @override
   Widget build(BuildContext context) {
-    final name = detail.group.name;
-    final balance = detail.me != null ? detail.balances[detail.me!.id] ?? 0.0 : 0.0;
-    final balanceColor = AppTheme.balanceColor(balance);
-    final String balanceLabel = balance > 0.005
-        ? 'Dluží vám'
-        : (balance < -0.005 ? 'Dlužíte' : 'Vyrovnáno');
-    final activity = detail.lastActivity ?? detail.group.createdAt;
+    final rows = <_TodoRow>[];
+    for (final g in groups) {
+      for (final debt in g.myDebts) {
+        final incoming = debt.toMemberId == g.me!.id;
+        final other = incoming ? debt.fromMemberId : debt.toMemberId;
+        final virtual = g.member(other)?.isVirtual ?? false;
+        rows.add(
+          _TodoRow(
+            groupId: g.group.id,
+            who: g.memberName(other),
+            verb: incoming ? 'ti dluží' : 'dostane od tebe',
+            amount: incoming ? debt.amount : -debt.amount,
+            note:
+                '${g.group.name} · '
+                '${incoming ? (virtual ? 'bez aplikace' : 'ukázat QR') : 'pošli platbu'}',
+          ),
+        );
+      }
+    }
+    rows.sort((a, b) => b.amount.abs().compareTo(a.amount.abs()));
+    final total = groups.fold<double>(0, (s, g) => s + g.myBalance);
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
+    return Slip(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 26),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              const Expanded(
+                child: Text(
+                  'Dnes vyřešit',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                ),
+              ),
+              Text(
+                DateFormat('d. M. yyyy').format(DateTime.now()),
+                style: AppFonts.money(
+                  size: 11,
+                  weight: FontWeight.w400,
+                  color: AppColors.muted,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Text(
+                'Nikdo nikomu nic nedluží.',
+                style: TextStyle(fontSize: 14, color: AppColors.muted),
+              ),
+            )
+          else
+            for (final row in rows.take(5)) row,
+          const SizedBox(height: 8),
+          const DashedRule(),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Expanded(
+                child: Text(
+                  total > 0.005
+                      ? 'Celkem k dobru'
+                      : (total < -0.005 ? 'Celkem dlužíš' : 'Vyrovnáno'),
+                  style: const TextStyle(fontSize: 13, color: AppColors.muted),
+                ),
+              ),
+              Text(
+                CurrencyFormatter.compact(total, signed: true),
+                style: AppFonts.money(
+                  size: 22,
+                  color: AppTheme.balanceColor(total),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TodoRow extends StatelessWidget {
+  final String groupId;
+  final String who;
+  final String verb;
+  final double amount;
+  final String note;
+
+  const _TodoRow({
+    required this.groupId,
+    required this.who,
+    required this.verb,
+    required this.amount,
+    required this.note,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () => context.push(RouteNames.groupDetail(groupId)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              LeaderRow(
+                label: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: who,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      TextSpan(
+                        text: ' $verb',
+                        style: const TextStyle(color: AppColors.muted),
+                      ),
+                    ],
+                  ),
+                  style: const TextStyle(fontSize: 14),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                amount: CurrencyFormatter.compact(amount, signed: true),
+                amountStyle: AppFonts.money(
+                  size: 14,
+                  color: AppTheme.balanceColor(amount),
+                ),
+              ),
+              Text(
+                note,
+                style: const TextStyle(fontSize: 12, color: AppColors.muted),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GroupCard extends StatelessWidget {
+  final GroupDetail detail;
+
+  const _GroupCard({required this.detail});
+
+  @override
+  Widget build(BuildContext context) {
+    final balance = detail.myBalance;
+    final label = balance > 0.005
+        ? 'Dluží ti'
+        : (balance < -0.005 ? 'Dlužíš' : 'Vyrovnáno');
+
+    return Material(
+      color: AppColors.slip,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: AppColors.line),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => context.push(RouteNames.groupDetail(detail.group.id)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
               Container(
-                width: 48,
-                height: 48,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
-                  color: AppTheme.primaryColor.withAlpha(20),
+                  color: detail.group.type.tint,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Center(
-                  child: Text(
-                    name.isNotEmpty ? name.characters.first.toUpperCase() : 'S',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryColor,
-                    ),
-                  ),
-                ),
+                child: Icon(detail.group.type.icon, size: 20),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -312,19 +350,22 @@ class _GroupCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      name,
+                      detail.group.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Text(
-                      '${TextFormatter.memberCount(detail.members.length)} • '
-                      '${TextFormatter.relativeDate(activity)}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      '${TextFormatter.people(detail.members.length)} · '
+                      '${TextFormatter.expenses(detail.expenses.length)}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: AppColors.muted,
+                      ),
                     ),
                   ],
                 ),
@@ -333,29 +374,163 @@ class _GroupCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    balanceLabel,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: balanceColor,
+                    label,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.muted,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 3),
                   Text(
-                    CurrencyFormatter.format(balance.abs()),
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: balanceColor,
+                    CurrencyFormatter.compact(balance, signed: true),
+                    style: AppFonts.money(
+                      color: AppTheme.balanceColor(balance),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(width: 6),
-              const Icon(LucideIcons.chevronRight, size: 18, color: Colors.grey),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// First launch: a tilted sample receipt and a short explanation.
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final mono = AppFonts.money(size: 14, weight: FontWeight.w400);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(32, 36, 32, 16),
+      children: [
+        Transform.rotate(
+          angle: -0.026,
+          child: Slip(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 26),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'TAKHLE TO BUDE VYPADAT',
+                  textAlign: TextAlign.center,
+                  style: AppFonts.money(
+                    size: 12,
+                    weight: FontWeight.w400,
+                    color: AppColors.muted,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                LeaderRow(
+                  label: const Text('Pivo ×3'),
+                  amount: 'Ty + Pepa',
+                  amountStyle: mono,
+                ),
+                const SizedBox(height: 8),
+                LeaderRow(
+                  label: const Text('Pizza'),
+                  amount: 'Kája',
+                  amountStyle: mono,
+                ),
+                const SizedBox(height: 10),
+                const DashedRule(),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Pepa ti pošle',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    Text(
+                      '+142 Kč',
+                      style: AppFonts.money(size: 14, color: AppColors.emerald),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 36),
+        const Text(
+          'Zatím žádná skupina',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Založ skupinu pro výlet, byt nebo dnešní večer v hospodě. '
+          'Vyfoť účtenku a hned uvidíte, kdo komu kolik pošle.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 15,
+            height: 1.5,
+            color: AppColors.mutedStrong,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BottomActions extends ConsumerWidget {
+  final bool empty;
+
+  const _BottomActions({required this.empty});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          AppButton(
+            label: empty ? 'Vytvořit první skupinu' : 'Vytvořit skupinu',
+            icon: empty ? null : LucideIcons.plus,
+            onPressed: () => showCreateGroupSheet(context),
+          ),
+          const SizedBox(height: 10),
+          AppButton(
+            label: 'Připojit se · QR nebo kód',
+            kind: AppButtonKind.ghost,
+            height: 48,
+            icon: LucideIcons.qrCode,
+            onPressed: () => _showJoinInfo(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showJoinInfo(BuildContext context) {
+    showPaperSheet<void>(
+      context,
+      (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SheetHeader(title: 'Připojit se ke skupině'),
+          const SizedBox(height: 8),
+          const Text(
+            'Skupiny jsou zatím uložené jen v tomto telefonu. Připojit se '
+            'ke skupině někoho jiného půjde, až přibude online '
+            'synchronizace. Do té doby tě může přidat jako člena bez '
+            'aplikace.',
+            style: TextStyle(fontSize: 15, height: 1.5, color: AppColors.body),
+          ),
+          const SizedBox(height: 18),
+          AppButton(
+            label: 'Rozumím',
+            kind: AppButtonKind.dark,
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
       ),
     );
   }

@@ -1,24 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+import '../../../core/config/theme.dart';
+import '../../../core/ui/receipt_widgets.dart';
 import '../../../core/utils/currency_formatter.dart';
 import '../../../core/utils/split_calculator.dart';
+import '../../../core/utils/text_formatter.dart';
 import '../../groups/application/group_providers.dart';
-import '../../groups/domain/group_member.dart';
+import '../../groups/presentation/group_visuals.dart';
 
 /// Opens the sheet for adding an expense without a receipt, or for recording
-/// a direct payment between two members.
+/// money handed back between two members.
 Future<void> showAddExpenseSheet(BuildContext context, String groupId) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-    ),
-    builder: (context) => _AddExpenseSheet(groupId: groupId),
+  return showPaperSheet<void>(
+    context,
+    (_) => _AddExpenseSheet(groupId: groupId),
   );
 }
-
-enum _EntryMode { expense, settlement }
 
 class _AddExpenseSheet extends ConsumerStatefulWidget {
   final String groupId;
@@ -30,63 +28,113 @@ class _AddExpenseSheet extends ConsumerStatefulWidget {
 }
 
 class _AddExpenseSheetState extends ConsumerState<_AddExpenseSheet> {
-  final _titleController = TextEditingController();
-  final _amountController = TextEditingController();
+  final _amount = TextEditingController();
+  final _title = TextEditingController();
 
-  _EntryMode _mode = _EntryMode.expense;
+  /// 0 = expense, 1 = money handed back.
+  int _tab = 0;
   bool _initialized = false;
   bool _saving = false;
   String? _error;
 
-  // Expense: who paid and who shares the cost.
   String? _paidBy;
   final Set<String> _participants = {};
-
-  // Settlement: who handed money to whom.
   String? _from;
   String? _to;
 
   @override
   void dispose() {
-    _titleController.dispose();
-    _amountController.dispose();
+    _amount.dispose();
+    _title.dispose();
     super.dispose();
   }
 
-  void _initDefaults(GroupDetail detail) {
+  void _init(GroupDetail d) {
     if (_initialized) return;
     _initialized = true;
-    final members = detail.members;
-    _paidBy = detail.me?.id ?? (members.isNotEmpty ? members.first.id : null);
-    _participants.addAll(members.map((m) => m.id));
+    _paidBy = d.me?.id ?? d.members.first.id;
+    _participants.addAll(d.members.map((m) => m.id));
     _from = _paidBy;
-    for (final member in members) {
-      if (member.id != _from) {
-        _to = member.id;
-        break;
-      }
-    }
+    _to = d.members.where((m) => m.id != _from).firstOrNull?.id;
+  }
+
+  Future<void> _pickMember(
+    GroupDetail d,
+    String title,
+    String? current,
+    ValueChanged<String> onPicked,
+  ) async {
+    final picked = await showPaperSheet<String>(
+      context,
+      (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SheetHeader(title: title, showClose: false),
+          const SizedBox(height: 8),
+          PaperCard(
+            child: Column(
+              children: [
+                for (final (i, m) in d.members.indexed)
+                  InkWell(
+                    onTap: () => Navigator.of(context).pop(m.id),
+                    child: Container(
+                      height: 52,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        border: i == 0
+                            ? null
+                            : const Border(
+                                top: BorderSide(color: AppColors.hairline),
+                              ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              displayName(d, m.id),
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: m.id == current
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          if (m.id == current)
+                            const Icon(
+                              LucideIcons.check,
+                              size: 18,
+                              color: AppColors.emerald,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked != null) setState(() => onPicked(picked));
   }
 
   Future<void> _save() async {
-    final amount = CurrencyFormatter.tryParse(_amountController.text);
+    final amount = CurrencyFormatter.tryParse(_amount.text);
     if (amount == null || amount <= 0) {
-      setState(() => _error = 'Zadejte částku větší než nula.');
+      setState(() => _error = 'Zadej částku větší než nula.');
       return;
     }
-
     final actions = ref.read(groupActionsProvider);
 
-    if (_mode == _EntryMode.expense) {
-      final title = _titleController.text.trim();
+    if (_tab == 0) {
+      final title = _title.text.trim();
       if (title.isEmpty) {
-        setState(() => _error = 'Zadejte název výdaje.');
+        setState(() => _error = 'Napiš, za co výdaj byl.');
         return;
       }
-      if (_paidBy == null || _participants.isEmpty) {
-        setState(() => _error = 'Vyberte, mezi koho se výdaj dělí.');
-        return;
-      }
+      if (_paidBy == null || _participants.isEmpty) return;
       setState(() => _saving = true);
       await actions.addExpense(
         groupId: widget.groupId,
@@ -96,7 +144,7 @@ class _AddExpenseSheetState extends ConsumerState<_AddExpenseSheet> {
       );
     } else {
       if (_from == null || _to == null || _from == _to) {
-        setState(() => _error = 'Vyberte dva různé členy.');
+        setState(() => _error = 'Vyber dva různé lidi.');
         return;
       }
       setState(() => _saving = true);
@@ -107,177 +155,257 @@ class _AddExpenseSheetState extends ConsumerState<_AddExpenseSheet> {
         amount: amount,
       );
     }
-
     if (mounted) Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
-    final detail = ref.watch(groupDetailProvider(widget.groupId)).valueOrNull;
-    if (detail == null) {
+    final d = ref.watch(groupDetailProvider(widget.groupId)).valueOrNull;
+    if (d == null || d.members.isEmpty) {
       return const SizedBox(
         height: 200,
         child: Center(child: CircularProgressIndicator()),
       );
     }
-    _initDefaults(detail);
-    final members = detail.members;
+    _init(d);
 
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-      ),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<_EntryMode>(
-                segments: const [
-                  ButtonSegment(
-                    value: _EntryMode.expense,
-                    label: Text('Výdaj'),
-                  ),
-                  ButtonSegment(
-                    value: _EntryMode.settlement,
-                    label: Text('Předání peněz'),
-                  ),
-                ],
-                selected: {_mode},
-                onSelectionChanged: (selection) => setState(() {
-                  _mode = selection.first;
-                  _error = null;
-                }),
-              ),
+    final amount = CurrencyFormatter.tryParse(_amount.text) ?? 0;
+    final n = _participants.length;
+    final allOn = n == d.members.length;
+    String perHead = 'Vyber, mezi koho se výdaj rozdělí';
+    if (n > 0) {
+      final each = amount / n;
+      final exact = ((amount * 100).round() % n) == 0;
+      perHead = amount > 0
+          ? '${exact ? '' : '≈ '}${CurrencyFormatter.compact(each)} na osobu · '
+                '${TextFormatter.people(n)}'
+          : TextFormatter.people(n);
+    }
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SheetHeader(title: _tab == 0 ? 'Nový výdaj' : 'Vrácení peněz'),
+          const SizedBox(height: 8),
+          SegmentTabs(
+            labels: const ['Výdaj', 'Vrácení peněz'],
+            selected: _tab,
+            onChanged: (i) => setState(() {
+              _tab = i;
+              _error = null;
+            }),
+          ),
+          const SizedBox(height: 18),
+          const Center(
+            child: Text(
+              'Částka',
+              style: TextStyle(fontSize: 13, color: AppColors.muted),
             ),
-            const SizedBox(height: 16),
-            if (_mode == _EntryMode.expense) ...[
-              TextField(
-                controller: _titleController,
-                textCapitalization: TextCapitalization.sentences,
-                decoration: const InputDecoration(
-                  labelText: 'Název',
-                  hintText: 'Např. Taxi z letiště',
-                  border: OutlineInputBorder(),
+          ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Expanded(
+                flex: 3,
+                child: TextField(
+                  controller: _amount,
+                  autofocus: true,
+                  textAlign: TextAlign.right,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  onChanged: (_) => setState(() => _error = null),
+                  style: AppFonts.money(size: 48).copyWith(letterSpacing: -1),
+                  decoration: InputDecoration(
+                    hintText: '0',
+                    hintStyle: AppFonts.money(size: 48, color: AppColors.dots),
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
+                  ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  'Kč',
+                  style: AppFonts.money(
+                    size: 24,
+                    weight: FontWeight.w500,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ),
             ],
+          ),
+          if (_tab == 0)
+            Center(
+              child: Text(
+                perHead,
+                style: const TextStyle(fontSize: 12, color: AppColors.muted),
+              ),
+            ),
+          const SizedBox(height: 16),
+          if (_tab == 0) ...[
+            const FieldLabel('Za co'),
             TextField(
-              controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              controller: _title,
+              textCapitalization: TextCapitalization.sentences,
+              onChanged: (_) => setState(() => _error = null),
               decoration: const InputDecoration(
-                labelText: 'Částka (Kč)',
-                hintText: '300',
-                border: OutlineInputBorder(),
+                hintText: 'Např. Taxi z letiště',
               ),
             ),
             const SizedBox(height: 12),
-            if (_mode == _EntryMode.expense) ...[
-              _MemberDropdown(
-                label: 'Kdo platil',
-                members: members,
-                value: _paidBy,
-                onChanged: (id) => setState(() => _paidBy = id),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Rozdělit rovným dílem mezi',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: members.map((member) {
-                  return FilterChip(
-                    label: Text(member.displayName),
-                    selected: _participants.contains(member.id),
-                    onSelected: (selected) => setState(() {
-                      selected
-                          ? _participants.add(member.id)
-                          : _participants.remove(member.id);
-                    }),
-                  );
-                }).toList(),
-              ),
-            ] else ...[
-              _MemberDropdown(
-                label: 'Kdo platil',
-                members: members,
-                value: _from,
-                onChanged: (id) => setState(() => _from = id),
-              ),
-              const SizedBox(height: 12),
-              _MemberDropdown(
-                label: 'Komu',
-                members: members,
-                value: _to,
-                onChanged: (id) => setState(() => _to = id),
-              ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                _error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _saving ? null : _save,
-                child: Text(
-                  _mode == _EntryMode.expense
-                      ? 'Uložit výdaj'
-                      : 'Zaznamenat platbu',
-                ),
+            _memberField(
+              d,
+              label: 'Zaplatil(a)',
+              value: _paidBy,
+              onTap: () => _pickMember(
+                d,
+                'Kdo zaplatil?',
+                _paidBy,
+                (id) => _paidBy = id,
               ),
             ),
+            const SizedBox(height: 14),
+            const FieldLabel('Rozdělit mezi'),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                PillToggle(
+                  label: 'Všichni',
+                  selected: allOn,
+                  dashedWhenOff: true,
+                  onTap: () => setState(() {
+                    if (allOn) {
+                      _participants.clear();
+                    } else {
+                      _participants.addAll(d.members.map((m) => m.id));
+                    }
+                  }),
+                ),
+                for (final m in d.members)
+                  PillToggle(
+                    label: displayName(d, m.id),
+                    selected: _participants.contains(m.id),
+                    onTap: () => setState(() {
+                      _participants.contains(m.id)
+                          ? _participants.remove(m.id)
+                          : _participants.add(m.id);
+                    }),
+                  ),
+              ],
+            ),
+            if (d.members.any(
+              (m) => m.isVirtual && _participants.contains(m.id),
+            ))
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '${d.members.where((m) => m.isVirtual && _participants.contains(m.id)).map((m) => m.displayName).join(', ')} '
+                  'nemá aplikaci, díl se mu i tak započítá.',
+                  style: const TextStyle(fontSize: 12, color: AppColors.muted),
+                ),
+              ),
+          ] else ...[
+            _memberField(
+              d,
+              label: 'Kdo peníze vrátil',
+              value: _from,
+              onTap: () => _pickMember(
+                d,
+                'Kdo peníze vrátil?',
+                _from,
+                (id) => _from = id,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _memberField(
+              d,
+              label: 'Komu',
+              value: _to,
+              onTap: () => _pickMember(d, 'Komu?', _to, (id) => _to = id),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Hotovost nebo převod mimo QR. Zůstatky se hned přepočítají.',
+              style: TextStyle(fontSize: 12, color: AppColors.muted),
+            ),
           ],
-        ),
+          if (_error != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              _error!,
+              style: const TextStyle(fontSize: 13, color: AppColors.red),
+            ),
+          ],
+          const SizedBox(height: 20),
+          AppButton(
+            label: _tab == 0
+                ? (n == 0 ? 'Vyber, mezi koho se dělí' : 'Uložit výdaj')
+                : 'Zaznamenat vrácení',
+            onPressed: _saving || (_tab == 0 && n == 0) ? null : _save,
+          ),
+        ],
       ),
     );
   }
-}
 
-class _MemberDropdown extends StatelessWidget {
-  final String label;
-  final List<GroupMember> members;
-  final String? value;
-  final ValueChanged<String?> onChanged;
-
-  const _MemberDropdown({
-    required this.label,
-    required this.members,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InputDecorator(
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+  Widget _memberField(
+    GroupDetail d, {
+    required String label,
+    required String? value,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: AppColors.slip,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: AppColors.outline),
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value,
-          isExpanded: true,
-          items: members
-              .map(
-                (m) => DropdownMenuItem(value: m.id, child: Text(m.displayName)),
-              )
-              .toList(),
-          onChanged: onChanged,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: SizedBox(
+          height: 54,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                      Text(
+                        value == null ? '—' : displayName(d, value),
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(LucideIcons.chevronDown, size: 14),
+              ],
+            ),
+          ),
         ),
       ),
     );

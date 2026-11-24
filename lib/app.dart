@@ -13,18 +13,15 @@ class SplitBillApp extends StatelessWidget {
       title: 'Split Bill',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.system,
+      // The receipt-on-paper design is light only.
+      themeMode: ThemeMode.light,
       routerConfig: appRouter,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      supportedLocales: const [
-        Locale('cs', 'CZ'),
-        Locale('en', 'US'),
-      ],
+      supportedLocales: const [Locale('cs', 'CZ'), Locale('en', 'US')],
     );
   }
 }

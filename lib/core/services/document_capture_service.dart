@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:cunning_document_scanner/cunning_document_scanner.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 /// Service responsible for capturing receipt images using either the
@@ -9,7 +10,7 @@ class DocumentCaptureService {
   final ImagePicker _imagePicker;
 
   DocumentCaptureService({ImagePicker? imagePicker})
-      : _imagePicker = imagePicker ?? ImagePicker();
+    : _imagePicker = imagePicker ?? ImagePicker();
 
   /// Launches the native document scanner (Google ML Kit on Android, VisionKit on iOS).
   /// Returns a list of captured and auto-cropped image files.
@@ -39,3 +40,8 @@ class DocumentCaptureService {
     return image != null ? File(image.path) : null;
   }
 }
+
+/// Overridable in tests, where no camera is available.
+final documentCaptureProvider = Provider<DocumentCaptureService>(
+  (ref) => DocumentCaptureService(),
+);

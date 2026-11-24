@@ -7,6 +7,10 @@ class Expense {
   final String title;
   final DateTime createdAt;
 
+  /// How the expense was entered: 'ai', 'device' (on-device OCR) or null
+  /// for a manual entry.
+  final String? source;
+
   const Expense({
     required this.id,
     required this.groupId,
@@ -14,6 +18,7 @@ class Expense {
     required this.totalAmount,
     required this.title,
     required this.createdAt,
+    this.source,
   });
 
   Map<String, dynamic> toJson() {
@@ -24,6 +29,7 @@ class Expense {
       'total_amount': totalAmount,
       'title': title,
       'created_at': createdAt.toIso8601String(),
+      'source': source,
     };
   }
 
@@ -37,6 +43,7 @@ class Expense {
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : DateTime.now(),
+      source: json['source'] as String?,
     );
   }
 }

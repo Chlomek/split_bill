@@ -1,3 +1,6 @@
+/// What a group is for; picks its icon and tint.
+enum GroupType { trip, home, night, other }
+
 /// Model matching the "groups" table in Supabase.
 class Group {
   final String id;
@@ -5,6 +8,7 @@ class Group {
   final String inviteCode;
   final String createdBy;
   final DateTime createdAt;
+  final GroupType type;
 
   const Group({
     required this.id,
@@ -12,6 +16,7 @@ class Group {
     required this.inviteCode,
     required this.createdBy,
     required this.createdAt,
+    this.type = GroupType.other,
   });
 
   Map<String, dynamic> toJson() {
@@ -21,6 +26,7 @@ class Group {
       'invite_code': inviteCode,
       'created_by': createdBy,
       'created_at': createdAt.toIso8601String(),
+      'type': type.name,
     };
   }
 
@@ -33,6 +39,10 @@ class Group {
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : DateTime.now(),
+      type: GroupType.values.firstWhere(
+        (t) => t.name == json['type'],
+        orElse: () => GroupType.other,
+      ),
     );
   }
 }

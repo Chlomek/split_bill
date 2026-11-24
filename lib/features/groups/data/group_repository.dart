@@ -14,7 +14,11 @@ abstract class GroupRepository {
   Future<Group?> getGroup(String groupId);
 
   /// Creates a group and adds [creator] as its first member.
-  Future<Group> createGroup({required String name, required UserProfile creator});
+  Future<Group> createGroup({
+    required String name,
+    required UserProfile creator,
+    GroupType type = GroupType.other,
+  });
 
   Future<void> renameGroup(String groupId, String name);
 
@@ -54,6 +58,7 @@ class LocalGroupRepository implements GroupRepository {
   Future<Group> createGroup({
     required String name,
     required UserProfile creator,
+    GroupType type = GroupType.other,
   }) async {
     final group = Group(
       id: _uuid.v4(),
@@ -61,6 +66,7 @@ class LocalGroupRepository implements GroupRepository {
       inviteCode: _generateInviteCode(),
       createdBy: creator.id,
       createdAt: DateTime.now(),
+      type: type,
     );
     _store.groups.add(group);
     _store.members.add(
@@ -86,6 +92,7 @@ class LocalGroupRepository implements GroupRepository {
       inviteCode: old.inviteCode,
       createdBy: old.createdBy,
       createdAt: old.createdAt,
+      type: old.type,
     );
     await _store.save();
   }
@@ -96,6 +103,7 @@ class LocalGroupRepository implements GroupRepository {
         .where((e) => e.groupId == groupId)
         .map((e) => e.id)
         .toSet();
+    _store.expenseItems.removeWhere((i) => expenseIds.contains(i.expenseId));
     _store.splits.removeWhere((s) => expenseIds.contains(s.expenseId));
     _store.expenses.removeWhere((e) => e.groupId == groupId);
     _store.settlements.removeWhere((s) => s.groupId == groupId);
@@ -144,8 +152,10 @@ class LocalGroupRepository implements GroupRepository {
   String _generateInviteCode() {
     const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     final random = Random.secure();
-    return List.generate(8, (_) => alphabet[random.nextInt(alphabet.length)])
-        .join();
+    return List.generate(
+      8,
+      (_) => alphabet[random.nextInt(alphabet.length)],
+    ).join();
   }
 }
 

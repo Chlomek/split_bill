@@ -51,7 +51,6 @@ dependencies:
   flutter_secure_storage: ^10.3.4
   lucide_icons_flutter: ^4.0.3
   image: ^4.13.1
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -64,3 +63,26 @@ flutter:
   uses-material-design: true
   assets:
     - app.env
+    - assets/fonts/OFL-ibmplexmono.txt
+    - assets/fonts/OFL-schibstedgrotesk.txt
+
+  # Design fonts (SIL Open Font License 1.1, see assets/fonts/OFL-*.txt).
+  fonts:
+    - family: SchibstedGrotesk
+      fonts:
+        - asset: assets/fonts/SchibstedGrotesk-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/SchibstedGrotesk-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/SchibstedGrotesk-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/SchibstedGrotesk-Bold.ttf
+          weight: 700
+    - family: IBMPlexMono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/IBMPlexMono-SemiBold.ttf
+          weight: 600
